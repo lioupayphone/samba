@@ -483,7 +483,10 @@ def build(bld):
         'debug_locks.sh',
         'gcore_trace.sh',
         'notify.sh',
-        'statd-callout'
+        'statd-callout',
+        'pushconfig',
+        'push_config.sh',
+        'pull_config.sh'
     ]
 
     for t in etc_scripts:
@@ -495,6 +498,8 @@ def build(bld):
 
     bld.INSTALL_FILES('${CTDB_ETCDIR}/notify.d', 'config/notify.d.README',
                       destname='README')
+    bld.INSTALL_FILES('${CTDB_ETCDIR}/notify.d', 'config/notify.d.syncconfig',
+                      destname='syncconfig', chmod=0755)
 
     bld.install_dir(bld.env.CTDB_LOGDIR)
     bld.install_dir(bld.env.CTDB_RUNDIR)

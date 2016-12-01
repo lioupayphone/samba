@@ -1598,6 +1598,23 @@ static int control_enablescript(struct ctdb_context *ctdb, int argc, const char 
 
 	return 0;
 }
+/*sync configuration*/
+static int control_syncconfig(struct ctdb_context *ctdb, int argc, const char **argv)
+{
+	int ret;
+	if(argc<1)
+	{
+	    usage();
+	}
+	ret = ctdb_ctrl_syncconfig(ctdb, TIMELIMIT(), options.pnn, argv[0]);
+	if (ret != 0) {
+	  DEBUG(DEBUG_ERR, ("Unable to sync config %s on node %u\n", argv[0], options.pnn));
+		return ret;
+	}
+
+	return 0;
+	
+}
 
 /*
   disable an eventscript
@@ -6369,6 +6386,7 @@ static const struct {
 	{ "dbstatistics",    control_dbstatistics,      false,	false, "show db statistics", "<dbname|dbid>" },
 	{ "reloadips",       control_reloadips,         false,	false, "reload the public addresses file on specified nodes" , "[<pnn-list>]" },
 	{ "ipiface",         control_ipiface,           false,	true,  "Find which interface an ip address is hosted on", "<ip>" },
+	{"syncconfig",    control_syncconfig,      true,        false,   "sync configurations",     "smb|nfs|dns|all"},
 };
 
 /*

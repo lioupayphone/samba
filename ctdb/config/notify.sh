@@ -11,6 +11,13 @@ nd="${d}/notify.d"
 
 ok=true
 
+echo "begin to execute notify.sh"
+
+if [ ! -f "/var/run/ctdb/synclock" ] ; then
+	touch /var/run/ctdb/synclock > /dev/null 2>&1
+
+fi
+
 for i in "${nd}/"* ; do
     # Don't run files matching basename
     case "${i##*/}" in
@@ -21,6 +28,11 @@ for i in "${nd}/"* ; do
     [ -x "$i" ] || continue
 
     # Flag failures
+    if [ "x$2" != "x" ] ; then
+	flock -x -w 5 /var/run/ctdb/synclock -c "\"$i\" \"$1\" \"$2\"" || ok=false
+	 continue
+    fi
+     
     "$i" "$1" || ok=false
 done
 

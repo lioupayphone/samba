@@ -1921,6 +1921,9 @@ rm -rf %{buildroot}
 %config(noreplace) %{_sysconfdir}/ctdb/gcore_trace.sh
 %config(noreplace) %{_sysconfdir}/ctdb/functions
 %config(noreplace) %{_sysconfdir}/ctdb/debug_locks.sh
+%config(noreplace) %{_sysconfdir}/ctdb/pushconfig
+%config(noreplace) %{_sysconfdir}/ctdb/push_config.sh
+%config(noreplace) %{_sysconfdir}/ctdb/pull_config.sh
 %dir %{_localstatedir}/lib/ctdb/
 %{_tmpfilesdir}/%{name}.conf
 
@@ -1938,6 +1941,7 @@ rm -rf %{buildroot}
 %{_sysconfdir}/ctdb/events.d/
 %dir %{_sysconfdir}/ctdb/notify.d
 %{_sysconfdir}/ctdb/notify.d/README
+%{_sysconfdir}/ctdb/notify.d/syncconfig
 %{_prefix}/lib/tmpfiles.d/ctdb.conf
 %{_sbindir}/ctdbd
 %{_sbindir}/ctdbd_wrapper

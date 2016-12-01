@@ -580,7 +580,8 @@ static int32_t ctdb_control_dispatch(struct ctdb_context *ctdb,
 
 	case CTDB_CONTROL_ENABLE_SCRIPT:
 		return ctdb_control_enable_script(ctdb, indata);
-
+	case CTDB_CONTROL_SYNC_CONFIG:
+		return ctdb_control_sync_configuration(ctdb, indata);
 	case CTDB_CONTROL_DISABLE_SCRIPT:
 		return ctdb_control_disable_script(ctdb, indata);
 
