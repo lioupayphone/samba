@@ -29,6 +29,7 @@
 #include "../libds/common/flags.h"
 #include "smbldap.h"
 #include "../libcli/security/security.h"
+#include "../librpc/gen_ndr/netlogon.h"
 #include "lib/param/loadparm.h"
 
 #ifdef HAVE_LDAP
@@ -1267,7 +1268,7 @@ char *ads_parent_dn(const char *dn)
 {
 	ADS_STATUS status;
 	char *expr;
-	const char *attrs[] = {"*", "nTSecurityDescriptor", NULL};
+	const char *attrs[] = {"*", "msDS-SupportedEncryptionTypes", "nTSecurityDescriptor", NULL};
 
 	*res = NULL;
 
@@ -1415,6 +1416,17 @@ static ADS_STATUS ads_mod_ber(TALLOC_CTX *ctx, ADS_MODLIST *mods,
 }
 #endif
 
+static void ads_print_error(int ret, LDAP *ld)
+{
+	if (ret != 0) {
+		char *ld_error = NULL;
+		ldap_get_option(ld, LDAP_OPT_ERROR_STRING, &ld_error);
+		DEBUG(10,("AD LDAP failure %d (%s):\n%s\n", ret,
+			ldap_err2string(ret), ld_error));
+		SAFE_FREE(ld_error);
+	}
+}
+
 /**
  * Perform an ldap modify
  * @param ads connection to ads server
@@ -1450,6 +1462,7 @@ ADS_STATUS ads_gen_mod(ADS_STRUCT *ads, const char *mod_dn, ADS_MODLIST mods)
 	mods[i] = NULL;
 	ret = ldap_modify_ext_s(ads->ldap.ld, utf8_dn,
 				(LDAPMod **) mods, controls, NULL);
+	ads_print_error(ret, ads->ldap.ld);
 	TALLOC_FREE(utf8_dn);
 	return ADS_ERROR(ret);
 }
@@ -1478,6 +1491,7 @@ ADS_STATUS ads_gen_add(ADS_STRUCT *ads, const char *new_dn, ADS_MODLIST mods)
 	mods[i] = NULL;
 
 	ret = ldap_add_s(ads->ldap.ld, utf8_dn, (LDAPMod**)mods);
+	ads_print_error(ret, ads->ldap.ld);
 	TALLOC_FREE(utf8_dn);
 	return ADS_ERROR(ret);
 }
@@ -1499,6 +1513,7 @@ ADS_STATUS ads_del_dn(ADS_STRUCT *ads, char *del_dn)
 	}
 
 	ret = ldap_delete_s(ads->ldap.ld, utf8_dn);
+	ads_print_error(ret, ads->ldap.ld);
 	TALLOC_FREE(utf8_dn);
 	return ADS_ERROR(ret);
 }
@@ -1991,8 +2006,10 @@ ADS_STATUS ads_add_service_principal_name(ADS_STRUCT *ads, const char *machine_n
  * @return 0 upon success, or non-zero otherwise
 **/
 
-ADS_STATUS ads_create_machine_acct(ADS_STRUCT *ads, const char *machine_name, 
-                                   const char *org_unit)
+ADS_STATUS ads_create_machine_acct(ADS_STRUCT *ads,
+				   const char *machine_name,
+				   const char *org_unit,
+				   uint32_t etype_list)
 {
 	ADS_STATUS ret;
 	char *samAccountName, *controlstr;
@@ -2006,6 +2023,12 @@ ADS_STATUS ads_create_machine_acct(ADS_STRUCT *ads, const char *machine_name,
 	uint32_t acct_control = ( UF_WORKSTATION_TRUST_ACCOUNT |\
 	                        UF_DONT_EXPIRE_PASSWD |\
 			        UF_ACCOUNTDISABLE );
+	uint32_t func_level = 0;
+
+	ret = ads_domain_func_level(ads, &func_level);
+	if (!ADS_ERR_OK(ret)) {
+		return ret;
+	}
 
 	if (!(ctx = talloc_init("ads_add_machine_acct")))
 		return ADS_ERROR(LDAP_NO_MEMORY);
@@ -2040,6 +2063,17 @@ ADS_STATUS ads_create_machine_acct(ADS_STRUCT *ads, const char *machine_name,
 	ads_mod_str(ctx, &mods, "sAMAccountName", samAccountName);
 	ads_mod_strlist(ctx, &mods, "objectClass", objectClass);
 	ads_mod_str(ctx, &mods, "userAccountControl", controlstr);
+
+	if (func_level >= DS_DOMAIN_FUNCTION_2008) {
+		const char *etype_list_str;
+
+		etype_list_str = talloc_asprintf(ctx, "%d", (int)etype_list);
+		if (etype_list_str == NULL) {
+			goto done;
+		}
+		ads_mod_str(ctx, &mods, "msDS-SupportedEncryptionTypes",
+			    etype_list_str);
+	}
 
 	ret = ads_gen_add(ads, new_dn, mods);
 
@@ -3830,10 +3864,16 @@ ADS_STATUS ads_check_ou_dn(TALLOC_CTX *mem_ctx,
 	const char *name;
 	char *ou_string;
 
-	exploded_dn = ldap_explode_dn(*account_ou, 0);
-	if (exploded_dn) {
-		ldap_value_free(exploded_dn);
-		return ADS_SUCCESS;
+	if (account_ou == NULL) {
+		return ADS_ERROR_NT(NT_STATUS_INVALID_PARAMETER);
+	}
+
+	if (*account_ou != NULL) {
+		exploded_dn = ldap_explode_dn(*account_ou, 0);
+		if (exploded_dn) {
+			ldap_value_free(exploded_dn);
+			return ADS_SUCCESS;
+		}
 	}
 
 	ou_string = ads_ou_string(ads, *account_ou);
