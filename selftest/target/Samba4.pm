@@ -282,6 +282,9 @@ sub provision_raw_prepare($$$$$$$$$$)
 	$ctx->{swiface} = $swiface;
 	$ctx->{password} = $password;
 	$ctx->{kdc_ipv4} = $kdc_ipv4;
+	if ($functional_level eq "2000") {
+		$ctx->{supported_enctypes} = "arcfour-hmac-md5 des-cbc-md5 des-cbc-crc"
+	}
 
 #
 # Set smbd log level here.
@@ -1141,6 +1144,10 @@ sub provision_fl2000dc($$)
 	my ($self, $prefix) = @_;
 
 	print "PROVISIONING DC...";
+	my $extra_conf_options = "
+	spnego:simulate_w2k=yes
+	ntlmssp_server:force_old_spnego=yes
+";
 	my $ret = $self->provision($prefix,
 				   "domain controller",
 				   "dc5",
@@ -1148,12 +1155,19 @@ sub provision_fl2000dc($$)
 				   "samba2000.example.com",
 				   "2000",
 				   "locDCpass5",
-				   undef, "", "", undef);
+				   undef, $extra_conf_options, "", undef);
 
 	unless($self->add_wins_config("$prefix/private")) {
 		warn("Unable to add wins configuration");
 		return undef;
 	}
+	$ret->{DC_SERVER} = $ret->{SERVER};
+	$ret->{DC_SERVER_IP} = $ret->{SERVER_IP};
+	$ret->{DC_SERVER_IPV6} = $ret->{SERVER_IPV6};
+	$ret->{DC_NETBIOSNAME} = $ret->{NETBIOSNAME};
+	$ret->{DC_USERNAME} = $ret->{USERNAME};
+	$ret->{DC_PASSWORD} = $ret->{PASSWORD};
+	$ret->{DC_REALM} = $ret->{REALM};
 
 	return $ret;
 }
@@ -1230,6 +1244,13 @@ sub provision_fl2008r2dc($$)
 		warn("Unable to add wins configuration");
 		return undef;
 	}
+	$ret->{DC_SERVER} = $ret->{SERVER};
+	$ret->{DC_SERVER_IP} = $ret->{SERVER_IP};
+	$ret->{DC_SERVER_IPV6} = $ret->{SERVER_IPV6};
+	$ret->{DC_NETBIOSNAME} = $ret->{NETBIOSNAME};
+	$ret->{DC_USERNAME} = $ret->{USERNAME};
+	$ret->{DC_PASSWORD} = $ret->{PASSWORD};
+	$ret->{DC_REALM} = $ret->{REALM};
 
 	return $ret;
 }
