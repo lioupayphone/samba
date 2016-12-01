@@ -1052,6 +1052,40 @@ int32_t ctdb_control_enable_script(struct ctdb_context *ctdb, TDB_DATA indata)
 	talloc_free(tmp_ctx);
 	return 0;
 }
+int32_t ctdb_control_sync_configuration(struct ctdb_context * ctdb, TDB_DATA indata)
+{
+	const char *script;
+	script = (char *)indata.dptr;
+
+	if (indata.dsize == 0) {
+		DEBUG(DEBUG_ERR,(__location__ " No script specified.\n"));
+		return -1;
+	}
+	if (indata.dptr[indata.dsize - 1] != '\0') {
+		DEBUG(DEBUG_ERR,(__location__ " String is not null terminated.\n"));
+		return -1;
+	}
+
+	DEBUG(DEBUG_NOTICE, (__location__  "begin to sync configuration %s\n", script));
+
+	if(strcmp(script, "all") == 0)
+	{
+		ctdb_run_syncconfig_script(ctdb, "sync", "all");
+	}else if(strcmp(script, "smb") == 0)
+	{
+		ctdb_run_syncconfig_script(ctdb, "sync", "smb");
+	}else if(strcmp(script, "dns") == 0)
+	{
+		ctdb_run_syncconfig_script(ctdb, "sync", "dns");
+	}else if(strcmp(script, "nfs") == 0)
+	{
+		ctdb_run_syncconfig_script(ctdb, "sync", "nfs");
+	}
+
+	//ctdb_run_notification_script(ctdb, "sync");
+	
+	return 0;
+}
 
 int32_t ctdb_control_disable_script(struct ctdb_context *ctdb, TDB_DATA indata)
 {

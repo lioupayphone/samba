@@ -1,0 +1,32 @@
+#!/bin/sh
+. /etc/ctdb/pull_config.sh
+
+update_config()
+{
+	if [ "x$1" == "xall" ] ; then
+		pull_smb
+		pull_dns
+		pull_nfs
+	fi
+	
+	if [ "x$1" == "xsmb" ] ; then
+		pull_smb
+	fi
+	
+	if [ "x$1" == "xdns" ] ; then
+		pull_dns
+	fi
+	
+	if [ "x$1" == "xnfs" ] ; then
+		pull_nfs
+	fi
+}
+
+  case "$1" in
+      sync)
+	    update_config $2
+        ;;
+      healthy)
+	    update_config $2
+	  ;;
+  esac

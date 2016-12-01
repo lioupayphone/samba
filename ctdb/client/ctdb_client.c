@@ -4658,6 +4658,34 @@ int ctdb_ctrl_enablescript(struct ctdb_context *ctdb, struct timeval timeout, ui
 
 	return 0;
 }
+/*sync configuration*/
+int ctdb_ctrl_syncconfig(struct ctdb_context *ctdb, struct timeval timeout, uint32_t destnode, const char *script)
+{
+	int ret;
+	TDB_DATA data;
+	int32_t res;
+	char *ctdb_base="/etc/ctdb";
+	char cmdarray[256] = {'\0'};
+	sprintf(cmdarray, "%s/pushconfig %s", ctdb_base, script);
+	ret = system(cmdarray);
+	if(ret != 0)
+	{
+		DEBUG(DEBUG_ERR, (__location__ "pushconfig into registry.tdb failed. ret: %d\n", ret));
+		return -1;
+	}
+	data.dsize = strlen(script) + 1;
+	data.dptr  = discard_const(script);
+
+	ret = ctdb_control(ctdb, destnode, 0, 
+			   CTDB_CONTROL_SYNC_CONFIG, 0, data, 
+			   NULL, NULL, &res, &timeout, NULL);
+	if (ret != 0 || res != 0) {
+		DEBUG(DEBUG_ERR,(__location__ " ctdb_control for syncconfig failed\n"));
+		return -1;
+	}
+
+	return 0;
+}
 
 /* disable an eventscript
  */

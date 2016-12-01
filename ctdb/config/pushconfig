@@ -1,0 +1,31 @@
+#!/bin/sh
+
+. /etc/ctdb/push_config.sh
+
+
+usage ()
+{
+    echo "usage: pushconfig { all | smb | dns |nfs }"
+    exit 1
+}
+
+
+cat "/etc/samba/smb.conf"|grep "clustering" >/dev/null 2>&1
+if [ $? -ne 0 ] ; then
+	echo "The node does not belong to cluster."
+	exit 1
+fi
+
+if [ "x$1" == "xall" ] ; then
+	push_smb
+	push_nfs
+	push_dns
+elif [ "x$1" == "xsmb" ] ; then
+	push_smb
+elif [ "x$1" == "xdns" ] ; then
+	push_dns
+elif [ "x$1" == "xnfs" ] ; then
+	push_nfs
+else
+	usage
+fi

@@ -621,5 +621,6 @@ struct ctdb_client_control_state *
 ctdb_ctrl_set_db_sticky_send(struct ctdb_context *ctdb, uint32_t destnode, uint32_t dbid);
 int ctdb_ctrl_set_db_sticky_recv(struct ctdb_context *ctdb, struct ctdb_client_control_state *state);
 int ctdb_ctrl_set_db_sticky(struct ctdb_context *ctdb, uint32_t destnode, uint32_t dbid);
+int ctdb_ctrl_syncconfig(struct ctdb_context *ctdb, struct timeval timeout, uint32_t destnode, const char *script);
 
 #endif /* _CTDB_CLIENT_H */

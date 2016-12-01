@@ -73,6 +73,38 @@ static int ctdb_run_notification_script_child(struct ctdb_context *ctdb, const c
 
 	return ret;
 }
+static int ctdb_run_syncconfig_script_child(struct ctdb_context *ctdb, const char *event, const char *service)
+{
+	struct stat st;
+	int ret;
+	char *cmd;
+
+	if (stat(ctdb->notification_script, &st) != 0) {
+		DEBUG(DEBUG_ERR,("Could not stat notification script %s. Can not send notifications.\n", ctdb->notification_script));
+		return -1;
+	}
+	if (!(st.st_mode & S_IXUSR)) {
+		DEBUG(DEBUG_ERR,("Notification script %s is not executable.\n", ctdb->notification_script));
+		return -1;
+	}
+
+	cmd = talloc_asprintf(ctdb, "%s %s %s\n", ctdb->notification_script, event, service);
+	CTDB_NO_MEMORY(ctdb, cmd);
+
+	ret = system(cmd);
+	/* if the system() call was successful, translate ret into the
+	   return code from the command
+	*/
+	if (ret != -1) {
+		ret = WEXITSTATUS(ret);
+	}
+	if (ret != 0) {
+		DEBUG(DEBUG_ERR,("Notification script \"%s\" failed with error %d\n", cmd, ret));
+	}
+
+	return ret;
+
+}
 
 void ctdb_run_notification_script(struct ctdb_context *ctdb, const char *event)
 {
@@ -101,6 +133,34 @@ void ctdb_run_notification_script(struct ctdb_context *ctdb, const char *event)
 
 	return;
 }
+void ctdb_run_syncconfig_script(struct ctdb_context * ctdb, const char * event, const char * service)
+{
+	pid_t child;
+
+	if (ctdb->notification_script == NULL) {
+		return;
+	}
+
+	child = ctdb_fork(ctdb);
+	if (child == (pid_t)-1) {
+		DEBUG(DEBUG_ERR,("Failed to fork() a notification child process\n"));
+		return;
+	}
+	if (child == 0) {
+		int ret;
+
+		prctl_set_comment("ctdb_notification");
+		debug_extra = talloc_asprintf(NULL, "notification-%s:", event);
+		ret = ctdb_run_syncconfig_script_child(ctdb, event, service);
+		if (ret != 0) {
+			DEBUG(DEBUG_ERR,(__location__ " Notification script failed\n"));
+		}
+		_exit(0);
+	}
+
+	return;
+}
+
 
 /*
   called when a health monitoring event script finishes
@@ -152,7 +212,8 @@ static void ctdb_health_callback(struct ctdb_context *ctdb, int status, void *p)
 		node->flags &= ~NODE_FLAGS_UNHEALTHY;
 		ctdb->monitor->next_interval = 5;
 
-		ctdb_run_notification_script(ctdb, "healthy");
+		//ctdb_run_notification_script(ctdb, "healthy");
+		ctdb_run_syncconfig_script(ctdb, "healthy", "all");
 	}
 
 after_change_status:

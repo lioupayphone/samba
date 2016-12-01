@@ -1436,6 +1436,7 @@ void ctdb_stop_vacuuming(struct ctdb_context *ctdb);
 int ctdb_vacuum_init(struct ctdb_db_context *ctdb_db);
 
 int32_t ctdb_control_enable_script(struct ctdb_context *ctdb, TDB_DATA indata);
+int32_t ctdb_control_sync_configuration(struct ctdb_context *ctdb, TDB_DATA indata);
 int32_t ctdb_control_disable_script(struct ctdb_context *ctdb, TDB_DATA indata);
 
 void ctdb_local_node_got_banned(struct ctdb_context *ctdb);
@@ -1484,6 +1485,7 @@ int ctdb_update_persistent_health(struct ctdb_context *ctdb,
 int ctdb_recheck_persistent_health(struct ctdb_context *ctdb);
 
 void ctdb_run_notification_script(struct ctdb_context *ctdb, const char *event);
+void ctdb_run_syncconfig_script(struct ctdb_context* ctdb, const char *event, const char *service);
 
 int verify_remote_ip_allocation(struct ctdb_context *ctdb, 
 				struct ctdb_all_public_ips *ips,
