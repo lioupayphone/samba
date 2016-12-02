@@ -77,8 +77,8 @@
 %{!?python_sitearch: %define python_sitearch %(%{__python} -c "from distutils.sysconfig import get_python_lib; print get_python_lib(1)")}
 
 Name:           samba
-Version:        %{samba_version}
-Release:        %{samba_release}
+Version:        4.2.10
+Release:        %{openfs_release}%{?dist}
 
 %if 0%{?rhel}
 Epoch:          0
@@ -97,7 +97,7 @@ License:        GPLv3+ and LGPLv3+
 Group:          System Environment/Daemons
 URL:            http://www.samba.org/
 
-Source0:        samba-%{version}%{pre_release}.tar.xz
+Source0:        samba%{pre_release}.tar.gz
 
 ## Red Hat specific replacement-files
 #Source1: samba.log
@@ -692,7 +692,7 @@ and use CTDB instead.
 
 
 %prep
-%setup -q -n samba-%{version}%{pre_release}
+%setup -q -n samba%{pre_release}
 
 #%patch1 -p1 -b .samba-4.2.10-ldap-sasl-win2003.patch
 #%patch3 -p1 -b .samba-4.2.3-document_netbios_length.patch
