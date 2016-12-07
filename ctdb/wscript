@@ -411,6 +411,14 @@ def build(bld):
                      install_path='${BINDIR}',
                      manpages='doc/ping_pong.1')
 
+    bld.SAMBA_LIBRARY('libctdb',
+                      source='libctdb/control.c libctdb/ctdb.c libctdb/io_elem.c libctdb/local_tdb.c libctdb/logging.c libctdb/messages.c libctdb/sync.c libctdb/tst.c',
+	              pc_files='ctdb.pc',
+                      deps='tdb',
+                      public_headers='libctdb/local_tdb.h libctdb/messages.h libctdb/io_elem.h libctdb/libctdb_private.h',
+                      vnum='0.0.1'
+                      )
+
     if bld.env.HAVE_PMDA:
         bld.SAMBA_BINARY('pmdactdb',
                          source='utils/pmda/pmda_ctdb.c',
@@ -505,14 +513,14 @@ def build(bld):
     bld.install_dir(bld.env.CTDB_RUNDIR)
     bld.install_dir(bld.env.CTDB_VARDIR)
 
-    sed_expr = 's/@PACKAGE_VERSION@/%s/g' % VERSION
-    t = bld.SAMBA_GENERATOR('ctdb-pc',
-                            source='ctdb.pc.in',
-                            target='ctdb.pc',
-                            rule='sed -e "%s" ${SRC} > ${TGT}' % sed_expr,
-                            dep_vars=['VERSION'])
-    t.env.VERSION = VERSION
-    bld.INSTALL_FILES('${LIBDIR}/pkgconfig', 'ctdb.pc')
+#    sed_expr = 's/@PACKAGE_VERSION@/%s/g' % VERSION
+#    t = bld.SAMBA_GENERATOR('ctdb-pc',
+#                            source='ctdb.pc.in',
+#                            target='ctdb.pc',
+#                            rule='sed -e "%s" ${SRC} > ${TGT}' % sed_expr,
+#                            dep_vars=['VERSION'])
+#    t.env.VERSION = VERSION
+#    bld.INSTALL_FILES('${LIBDIR}/pkgconfig', 'ctdb.pc')
 
     # Test binaries
     ctdb_tests = [
