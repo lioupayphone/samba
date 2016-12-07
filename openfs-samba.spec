@@ -1953,6 +1953,7 @@ rm -rf %{buildroot}
 %{_bindir}/onnode
 %{_bindir}/ctdb_lock_helper
 %{_bindir}/ctdb_event_helper
+%{_libdir}/liblibctdb.so.*
 
 %{_mandir}/man1/ctdb.1.gz
 %{_mandir}/man1/ctdbd.1.gz
@@ -1974,6 +1975,7 @@ rm -rf %{buildroot}
 %{_includedir}/samba-4.0/ctdb_typesafe_cb.h
 %{_includedir}/samba-4.0/ctdb_version.h
 %{_libdir}/pkgconfig/ctdb.pc
+%{_libdir}/liblibctdb.so
 
 %files -n ctdb-tests
 %defattr(-,root,root)

@@ -339,11 +339,6 @@ def build(bld):
                                              ctdb_update_record.c
                                              ctdb_lock.c'''),
                         includes='include include/internal',
-                        public_headers='''include/ctdb_version.h
-                                          include/ctdb.h
-                                          include/ctdb_private.h
-                                          include/ctdb_protocol.h
-                                          include/ctdb_typesafe_cb.h''',
                         deps='replace popt talloc tevent tdb')
 
     bld.SAMBA_BINARY('ctdbd',
@@ -410,6 +405,14 @@ def build(bld):
                      deps='',
                      install_path='${BINDIR}',
                      manpages='doc/ping_pong.1')
+
+    bld.SAMBA_LIBRARY('libctdb',
+                      source='libctdb/control.c libctdb/ctdb.c libctdb/io_elem.c libctdb/local_tdb.c libctdb/logging.c libctdb/messages.c libctdb/sync.c libctdb/tst.c',
+	              pc_files='ctdb.pc',
+                      deps='tdb',
+                      public_headers='include/ctdb_version.h include/ctdb.h include/ctdb_private.h include/ctdb_protocol.h include/ctdb_typesafe_cb.h',
+                      vnum='1.0.1'
+                      )
 
     if bld.env.HAVE_PMDA:
         bld.SAMBA_BINARY('pmdactdb',
@@ -505,14 +508,14 @@ def build(bld):
     bld.install_dir(bld.env.CTDB_RUNDIR)
     bld.install_dir(bld.env.CTDB_VARDIR)
 
-    sed_expr = 's/@PACKAGE_VERSION@/%s/g' % VERSION
-    t = bld.SAMBA_GENERATOR('ctdb-pc',
-                            source='ctdb.pc.in',
-                            target='ctdb.pc',
-                            rule='sed -e "%s" ${SRC} > ${TGT}' % sed_expr,
-                            dep_vars=['VERSION'])
-    t.env.VERSION = VERSION
-    bld.INSTALL_FILES('${LIBDIR}/pkgconfig', 'ctdb.pc')
+#    sed_expr = 's/@PACKAGE_VERSION@/%s/g' % VERSION
+#    t = bld.SAMBA_GENERATOR('ctdb-pc',
+#                            source='ctdb.pc.in',
+#                            target='ctdb.pc',
+#                            rule='sed -e "%s" ${SRC} > ${TGT}' % sed_expr,
+#                            dep_vars=['VERSION'])
+#    t.env.VERSION = VERSION
+#    bld.INSTALL_FILES('${LIBDIR}/pkgconfig', 'ctdb.pc')
 
     # Test binaries
     ctdb_tests = [

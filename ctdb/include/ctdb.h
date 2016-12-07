@@ -361,12 +361,15 @@ void ctdb_release_lock(struct ctdb_db *ctdb_db, struct ctdb_lock *lock);
 #define TRAVERSE_STATUS_RECORD		0
 #define TRAVERSE_STATUS_FINISHED	1
 #define TRAVERSE_STATUS_ERROR		2
+#define TRAVERSE_STATUS_REMOVE_HANDLE   3
 typedef int (*ctdb_traverse_callback_t)(struct ctdb_connection *ctdb,
 				    struct ctdb_db *ctdb_db,
 				    int status,
 				    TDB_DATA key,
 				    TDB_DATA data,
 				    void *private_data);
+
+bool ctdb_conn_is_broken(struct ctdb_connection *ctdb);
 
 /**
  * ctdb_traverse_async - traverse a database.

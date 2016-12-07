@@ -13,7 +13,7 @@ etcdir=@sysconfdir@
 Name: ctdb
 Description: A clustered database to store temporary data
 Version: @PACKAGE_VERSION@
-Libs: -L${libdir}
+Libs: -L${libdir} -llibctdb
 Cflags: -I${includedir}
 URL: http://ctdb.samba.org/
 
