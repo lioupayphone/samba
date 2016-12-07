@@ -17,7 +17,7 @@
    You should have received a copy of the GNU General Public License
    along with this program; if not, see <http://www.gnu.org/licenses/>.
 */
-#include "config.h"
+//#include "config.h"
 #include <sys/time.h>
 #include <sys/socket.h>
 #include <string.h>
@@ -176,7 +176,7 @@ struct ctdb_connection *ctdb_connect(const char *addr,
 	memset(&sun, 0, sizeof(sun));
 	sun.sun_family = AF_UNIX;
 	if (!addr)
-		addr = CTDB_PATH;
+		addr = CTDB_SOCKET;
 	strncpy(sun.sun_path, addr, sizeof(sun.sun_path)-1);
 	ctdb->fd = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (ctdb->fd < 0)

@@ -84,7 +84,7 @@ void io_elem_init_req_header(struct io_elem *io,
 
 	hdr->length = io->len;
 	hdr->ctdb_magic = CTDB_MAGIC;
-	hdr->ctdb_version = CTDB_VERSION;
+	hdr->ctdb_version = CTDB_PROTOCOL;
 	/* Generation and srcnode only used for inter-ctdbd communication. */
 	hdr->generation = 0;
 	hdr->destnode = destnode;
