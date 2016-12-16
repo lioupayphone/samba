@@ -30,3 +30,5 @@ CTDB_PUBLIC_ADDRESSES=/etc/ctdb/public_addresses
 
 # Set some CTDB tunable variables during CTDB startup?
 # CTDB_SET_TraverseTimeout=60
+
+CTDB_NOTIFY_SCRIPT=/etc/ctdb/notify.sh
