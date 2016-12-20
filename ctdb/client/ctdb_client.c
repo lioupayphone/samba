@@ -4664,15 +4664,7 @@ int ctdb_ctrl_syncconfig(struct ctdb_context *ctdb, struct timeval timeout, uint
 	int ret;
 	TDB_DATA data;
 	int32_t res;
-	char *ctdb_base="/etc/ctdb";
-	char cmdarray[256] = {'\0'};
-	sprintf(cmdarray, "%s/pushconfig %s", ctdb_base, script);
-	ret = system(cmdarray);
-	if(ret != 0)
-	{
-		DEBUG(DEBUG_ERR, (__location__ "pushconfig into registry.tdb failed. ret: %d\n", ret));
-		return -1;
-	}
+	
 	data.dsize = strlen(script) + 1;
 	data.dptr  = discard_const(script);
 

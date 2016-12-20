@@ -6452,6 +6452,8 @@ int main(int argc, const char *argv[])
 	poptContext pc;
 	struct event_context *ev;
 	const char *control;
+	char *ctdb_base="/etc/ctdb";
+	char cmdarray[256] = {'\0'};
 
 	setlinebuf(stdout);
 	
@@ -6514,6 +6516,16 @@ int main(int argc, const char *argv[])
 	alarm(options.maxruntime);
 
 	control = extra_argv[0];
+        if(strcmp(control, "syncconfig") == 0){
+                if(extra_argc < 2){
+                        usage();
+                }
+                sprintf(cmdarray, "%s/pushconfig %s", ctdb_base, *(extra_argv + 1));
+                if(system(cmdarray) != 0){
+                        DEBUG(DEBUG_ERR, ("Failed to push configuration into registry.tdb.\n\n"));
+                        exit(1);
+                }
+        }
 
 	/* Default value for CTDB_BASE - don't override */
 	setenv("CTDB_BASE", CTDB_ETCDIR, 0);
