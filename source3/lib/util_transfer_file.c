@@ -112,20 +112,6 @@ static ssize_t sys_pwrite_fn(void *file, const void *buf, size_t len, off_t offs
 	return sys_pwrite(*fd, buf, len, offset);
 }
 
-static ssize_t sys_pread_fn(void *file, void *buf, size_t len, off_t offset)
-{
-	int *fd = (int *)file;
-
-	return sys_pread(*fd, buf, len, offset);
-}
-
-static ssize_t sys_pwrite_fn(void *file, const void *buf, size_t len, off_t offset)
-{
-	int *fd = (int *)file;
-
-	return sys_pwrite(*fd, buf, len, offset);
-}
-
 off_t transfer_file(int infd, int outfd, off_t n)
 {
 	return (off_t)transfer_file_internal(&infd, &outfd, (size_t)n,

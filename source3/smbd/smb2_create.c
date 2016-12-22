@@ -1082,14 +1082,6 @@ static struct tevent_req *smbd_smb2_create_send(TALLOC_CTX *mem_ctx,
 				lease_ptr = NULL;
 			}
 
-			if (requested_oplock_level == SMB2_OPLOCK_LEVEL_LEASE) {
-				if (lease_ptr == NULL) {
-					requested_oplock_level = SMB2_OPLOCK_LEVEL_NONE;
-				}
-			} else {
-				lease_ptr = NULL;
-			}
-
 			/*
 			 * For a DFS path the function parse_dfs_path()
 			 * will do the path processing.

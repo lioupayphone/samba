@@ -300,7 +300,6 @@ typedef struct files_struct {
 	 * possibly the simplest approach. Thanks, Jeremy for the idea.
 	 */
 	struct tevent_req *deferred_close;
-	bool aapl_copyfile_supported;
 } files_struct;
 
 #define FSP_POSIX_FLAGS_OPEN		0x01

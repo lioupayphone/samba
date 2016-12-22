@@ -1037,7 +1037,6 @@ static NTSTATUS ntlm_auth_prepare_gensec_client(TALLOC_CTX *mem_ctx,
 		TALLOC_FREE(tmp_ctx);
 		return NT_STATUS_NO_MEMORY;
 	}
-	gensec_settings->backends = backends;
 
 	backends = talloc_zero_array(gensec_settings,
 				     const struct gensec_security_ops *, 4);

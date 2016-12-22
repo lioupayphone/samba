@@ -296,33 +296,6 @@ ctdb_set_pnn ()
     mkdir -p "$CTDB_SCRIPT_VARDIR"
 }
 
-# For now this creates the same public addresses each time.  However,
-# it could be made more flexible.
-setup_public_addresses ()
-{
-    if [ -f "$CTDB_PUBLIC_ADDRESSES" -a \
-	    "${CTDB_PUBLIC_ADDRESSES%/*}" = "$EVENTSCRIPTS_TESTS_VAR_DIR" ] ; then
-	rm "$CTDB_PUBLIC_ADDRESSES"
-    fi
-
-    export CTDB_PUBLIC_ADDRESSES=$(mktemp \
-				       --tmpdir="$EVENTSCRIPTS_TESTS_VAR_DIR" \
-				       "public-addresses-XXXXXXXX")
-
-    echo "Setting up CTDB_PUBLIC_ADDRESSES=${CTDB_PUBLIC_ADDRESSES}"
-    cat >"$CTDB_PUBLIC_ADDRESSES" <<EOF
-10.0.0.1/24 dev123
-10.0.0.2/24 dev123
-10.0.0.3/24 dev123
-10.0.0.4/24 dev123
-10.0.0.5/24 dev123
-10.0.0.6/24 dev123
-10.0.1.1/24 dev456
-10.0.1.2/24 dev456
-10.0.1.3/24 dev456
-EOF
-}
-
 setup_ctdb ()
 {
     setup_generic
@@ -623,65 +596,6 @@ EOF
 	ok
 	simple_test_event "notify"
     } || test_fail
-}
-
-######################################################################
-
-ctdb_catdb_format_pairs ()
-{
-    _count=0
-
-    while read _k _v ; do
-	_kn=$(echo -n "$_k" | wc -c)
-	_vn=$(echo -n "$_v" | wc -c)
-	cat <<EOF
-key(${_kn}) = "${_k}"
-dmaster: 0
-rsn: 1
-data(${_vn}) = "${_v}"
-
-EOF
-	_count=$(($_count + 1))
-    done
-
-    echo "Dumped ${_count} records"
-}
-
-check_ctdb_tdb_statd_state ()
-{
-    ctdb_get_my_public_addresses |
-    while read _x _sip _x ; do
-	for _cip ; do
-	    echo "statd-state@${_sip}@${_cip}" "$FAKE_DATE_OUTPUT"
-	done
-    done |
-    ctdb_catdb_format_pairs | {
-	ok
-	simple_test_command ctdb catdb ctdb.tdb
-    }
-}
-
-check_statd_callout_smnotify ()
-{
-    _state_even=$(( $(date '+%s') / 2 * 2))
-    _state_odd=$(($_state_even + 1))
-
-    nfs_load_config
-
-    ctdb_get_my_public_addresses |
-    while read _x _sip _x ; do
-	for _cip ; do
-	    cat <<EOF
---client=${_cip} --ip=${_sip} --server=${_sip} --stateval=${_state_even}
---client=${_cip} --ip=${_sip} --server=${NFS_HOSTNAME} --stateval=${_state_even}
---client=${_cip} --ip=${_sip} --server=${_sip} --stateval=${_state_odd}
---client=${_cip} --ip=${_sip} --server=${NFS_HOSTNAME} --stateval=${_state_odd}
-EOF
-	done
-    done | {
-	ok
-	simple_test_event "notify"
-    }
 }
 
 ######################################################################

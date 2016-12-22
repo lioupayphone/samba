@@ -50,12 +50,6 @@ python = os.getenv("PYTHON", "python")
 tap2subunit = python + " " + os.path.join(srcdir(), "selftest", "tap2subunit")
 
 
-def to_subunit1(subunit_version):
-    if subunit_version == 1:
-        return ""
-    return " | " + subunit2to1
-
-
 def valgrindify(cmdline):
     """Run a command under valgrind, if $VALGRIND was set."""
     valgrind = os.getenv("VALGRIND")
@@ -89,7 +83,7 @@ def add_prefix(prefix, env, support_list=False):
     return "%s/selftest/filter-subunit %s--fail-on-empty --prefix=\"%s.\" --suffix=\"(%s)\"" % (srcdir(), listopt, prefix, env)
 
 
-def plantestsuite_loadlist(name, env, cmdline, subunit_version=1):
+def plantestsuite_loadlist(name, env, cmdline):
     print "-- TEST-LOADLIST --"
     if env == "none":
         fullname = name

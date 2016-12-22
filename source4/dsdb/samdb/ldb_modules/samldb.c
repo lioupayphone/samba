@@ -1991,16 +1991,6 @@ static int samldb_user_account_control_change(struct samldb_ctx *ac)
 		ldb_msg_remove_attr(ac->msg, "userAccountControl");
 	}
 
-	sid = samdb_result_dom_sid(res, res->msgs[0], "objectSid");
-	if (sid == NULL) {
-		return ldb_module_operr(ac->module);
-	}
-
-	ret = samldb_check_user_account_control_acl(ac, sid, new_uac, old_uac);
-	if (ret != LDB_SUCCESS) {
-		return ret;
-	}
-
 	return LDB_SUCCESS;
 }
 

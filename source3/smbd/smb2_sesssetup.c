@@ -272,11 +272,6 @@ static NTSTATUS smbd_smb2_auth_generic_return(struct smbXsrv_session *session,
 		x->global->encryption_flags = SMBXSRV_ENCRYPTION_DESIRED;
 	}
 
-	if ((lp_smb_encrypt(-1) >= SMB_SIGNING_DESIRED) &&
-	    (xconn->smb2.client.capabilities & SMB2_CAP_ENCRYPTION)) {
-		x->encryption_desired = true;
-	}
-
 	if (lp_smb_encrypt(-1) == SMB_SIGNING_REQUIRED) {
 		x->global->encryption_flags = SMBXSRV_ENCRYPTION_REQUIRED |
 			SMBXSRV_ENCRYPTION_DESIRED;
@@ -664,10 +659,6 @@ static NTSTATUS smbd_smb2_bind_auth_return(struct smbXsrv_session *session,
 			  (unsigned long long)session->compat->vuid,
 			  nt_errstr(status)));
 		return NT_STATUS_LOGON_FAILURE;
-	}
-
-	if (security_session_user_level(session_info, NULL) >= SECURITY_USER) {
-		smb2req->do_signing = true;
 	}
 
 	*out_session_id = session->global->session_wire_id;

@@ -498,9 +498,7 @@ static int queue_msg(struct unix_dgram_send_queue *q,
 	DLIST_ADD_END(q->msgs, msg);
 	return 0;
 fail:
-#ifdef HAVE_STRUCT_MSGHDR_MSG_CONTROL
 	close_fd_array(fds_copy, num_fds);
-#endif
 	return ret;
 }
 

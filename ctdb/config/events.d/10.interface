@@ -39,30 +39,6 @@ get_all_interfaces ()
     all_interfaces=$(echo $all_interfaces $ctdb_ifaces | tr ' ' '\n' | sort -u)
 }
 
-get_real_iface ()
-{
-    # Output of "ip link show <iface>"
-    _iface_info="$1"
-
-    # Extract the full interface description to see if it is a VLAN
-    _t=$(echo "$_iface_info" |
-		awk 'NR == 1 { iface = $2; sub(":$", "", iface) ; \
-			       print iface }')
-    case "$_t" in
-	*@*)
-	    # VLAN: use the underlying interface, after the '@'
-	    echo "${_t##*@}"
-	    ;;
-	*)
-	    # Not a regular VLAN.  For backward compatibility, assume
-	    # there is some other sort of VLAN that doesn't have the
-	    # '@' in the output and only use what is before a '.'.  If
-	    # there is no '.' then this will be the whole interface
-	    # name.
-	    echo "${_t%%.*}"
-    esac
-}
-
 monitor_interfaces()
 {
 	get_all_interfaces
@@ -96,34 +72,6 @@ monitor_interfaces()
 	fi
 
 	return 0
-}
-
-# Sets: iface, ip, maskbits, family
-get_iface_ip_maskbits_family ()
-{
-    _iface_in="$1"
-    ip="$2"
-    _maskbits_in="$3"
-
-    set -- $(ip_maskbits_iface "$ip")
-    if [ -n "$1" ] ; then
-	maskbits="$1"
-	iface="$2"
-	family="$3"
-
-	if [ "$iface" != "$_iface_in" ] ; then
-	    printf \
-		'WARNING: Public IP %s hosted on interface %s but VNN says %s\n' \
-		"$ip" "$iface" "$_iface_in"
-	fi
-	if [ "$maskbits" != "$_maskbits_in" ] ; then
-	    printf \
-		'WARNING: Public IP %s has %s bit netmask but VNN says %s\n' \
-		    "$ip" "$maskbits" "$_maskbits_in"
-	fi
-    else
-	die "ERROR: Unable to determine interface for IP ${ip}"
-    fi
 }
 
 # Sets: iface, ip, maskbits, family

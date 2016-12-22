@@ -854,7 +854,7 @@ bool init_domain_list(void)
 		if (sec_chan_type == SEC_CHAN_RODC) {
 			domain->rodc = true;
 		}
-		
+
 	} else {
 		(void)add_trusted_domain(get_global_sam_name(), NULL,
 					 &cache_methods, get_global_sam_sid());

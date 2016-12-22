@@ -594,30 +594,6 @@ bool rename_share_filename(struct messaging_context *msg_ctx,
 		}
 	}
 
-	for (i=0; i<d->num_leases; i++) {
-		/* Update the filename in leases_db. */
-		NTSTATUS status;
-		struct share_mode_lease *l;
-
-		l = &d->leases[i];
-
-		status = leases_db_rename(&l->client_guid,
-					&l->lease_key,
-					&id,
-					d->servicepath,
-					d->base_name,
-					d->stream_name);
-		if (!NT_STATUS_IS_OK(status)) {
-			/* Any error recovery possible here ? */
-			DEBUG(1,("Failed to rename lease key for "
-				"renamed file %s:%s. %s\n",
-				d->base_name,
-				d->stream_name,
-				nt_errstr(status)));
-			continue;
-		}
-	}
-
 	return True;
 }
 

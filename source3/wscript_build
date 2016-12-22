@@ -1203,13 +1203,6 @@ if bld.CONFIG_GET("WITH_PROFILE"):
 else:
     smbstatus_source += ' utils/status_profile_dummy.c'
 
-smbstatus_source = 'utils/status.c smbd/notify_internal.c'
-
-if bld.CONFIG_GET("WITH_PROFILE"):
-    smbstatus_source += ' utils/status_profile.c'
-else:
-    smbstatus_source += ' utils/status_profile_dummy.c'
-
 bld.SAMBA3_BINARY('smbstatus',
                  source=smbstatus_source,
                  deps='''

@@ -126,6 +126,8 @@ static int vfs_gpfs_kernel_flock(vfs_handle_struct *handle, files_struct *fsp,
 	struct gpfs_config_data *config;
 	int ret = 0;
 
+	START_PROFILE(syscall_kernel_flock);
+
 	SMB_VFS_HANDLE_GET_DATA(handle, config,
 				struct gpfs_config_data,
 				return -1);
@@ -197,6 +199,8 @@ static int vfs_gpfs_setlease(vfs_handle_struct *handle, files_struct *fsp,
 {
 	struct gpfs_config_data *config;
 	int ret=0;
+
+	START_PROFILE(syscall_linux_setlease);
 
 	SMB_VFS_HANDLE_GET_DATA(handle, config,
 				struct gpfs_config_data,

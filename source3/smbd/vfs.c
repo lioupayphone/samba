@@ -770,20 +770,6 @@ static ssize_t vfs_pwrite_fn(void *file, const void *buf, size_t len, off_t offs
 	return SMB_VFS_PWRITE(fsp, buf, len, offset);
 }
 
-static ssize_t vfs_pread_fn(void *file, void *buf, size_t len, off_t offset)
-{
-	struct files_struct *fsp = (struct files_struct *)file;
-
-	return SMB_VFS_PREAD(fsp, buf, len, offset);
-}
-
-static ssize_t vfs_pwrite_fn(void *file, const void *buf, size_t len, off_t offset)
-{
-	struct files_struct *fsp = (struct files_struct *)file;
-
-	return SMB_VFS_PWRITE(fsp, buf, len, offset);
-}
-
 off_t vfs_transfer_file(files_struct *in, files_struct *out, off_t n)
 {
 	return transfer_file_internal((void *)in, (void *)out, n,
@@ -1321,32 +1307,6 @@ NTSTATUS check_reduced_name(connection_struct *conn, const char *fname)
 	DBG_INFO("%s reduced to %s\n", fname, resolved_name);
 	SAFE_FREE(resolved_name);
 	return NT_STATUS_OK;
-}
-
-/**
- * XXX: This is temporary and there should be no callers of this once
- * smb_filename is plumbed through all path based operations.
- *
- * Called when we know stream name parsing has already been done.
- */
-int vfs_stat_smb_basename(struct connection_struct *conn, const char *fname,
-		       SMB_STRUCT_STAT *psbuf)
-{
-	struct smb_filename smb_fname = {
-			.base_name = discard_const_p(char, fname)
-	};
-	int ret;
-
-	if (lp_posix_pathnames()) {
-		ret = SMB_VFS_LSTAT(conn, &smb_fname);
-	} else {
-		ret = SMB_VFS_STAT(conn, &smb_fname);
-	}
-
-	if (ret != -1) {
-		*psbuf = smb_fname.st;
-	}
-	return ret;
 }
 
 /**
