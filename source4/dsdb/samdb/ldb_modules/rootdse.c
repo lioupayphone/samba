@@ -831,7 +831,7 @@ static int rootdse_search(struct ldb_module *module, struct ldb_request *req)
 
 	if (do_attribute_explicit(req->op.search.attrs, "netlogon")) {
 		ret = rootdse_handle_netlogon(ac);
-		/* We have to return an empty result, so dont forward `ret' */
+		/* We have to return an empty result, so don't forward `ret' */
 		if (ret != LDB_SUCCESS) {
 			return ldb_module_done(ac->req, NULL, NULL, LDB_SUCCESS);
 		}
@@ -1178,6 +1178,10 @@ static int rootdse_enable_recycle_bin(struct ldb_module *module,struct ldb_conte
 	}
 
 	msg = ldb_msg_new(tmp_ctx);
+	if (msg == NULL) {
+		talloc_free(tmp_ctx);
+		return ldb_module_oom(module);
+	}
 	msg->dn = ntds_settings_dn;
 
 	ldb_msg_add_linearized_dn(msg, "msDS-EnabledFeature", op_feature_msg->dn);

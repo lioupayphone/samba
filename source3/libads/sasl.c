@@ -26,6 +26,7 @@
 #include "smb_krb5.h"
 #include "system/gssapi.h"
 #include "lib/param/loadparm.h"
+#include "krb5_env.h"
 
 #ifdef HAVE_LDAP
 
@@ -134,6 +135,7 @@ static ADS_STATUS ads_sasl_spnego_gensec_bind(ADS_STRUCT *ads,
 	struct auth_generic_state *auth_generic_state;
 	bool use_spnego_principal = lp_client_use_spnego_principal();
 	const char *sasl_list[] = { sasl, NULL };
+	NTTIME end_nt_time;
 
 	nt_status = auth_generic_client_prepare(NULL, &auth_generic_state);
 	if (!NT_STATUS_IS_OK(nt_status)) {
@@ -305,6 +307,14 @@ static ADS_STATUS ads_sasl_spnego_gensec_bind(ADS_STRUCT *ads,
 			TALLOC_FREE(auth_generic_state);
 			return ADS_ERROR_NT(NT_STATUS_INVALID_NETWORK_RESPONSE);
 		}
+	}
+
+	ads->auth.tgs_expire = LONG_MAX;
+	end_nt_time = gensec_expire_time(auth_generic_state->gensec_security);
+	if (end_nt_time != GENSEC_EXPIRE_TIME_INFINITY) {
+		struct timeval tv;
+		nttime_to_timeval(&tv, end_nt_time);
+		ads->auth.tgs_expire = tv.tv_sec;
 	}
 
 	if (ads->ldap.wrap_type > ADS_SASLWRAP_TYPE_PLAIN) {
@@ -739,18 +749,29 @@ static ADS_STATUS ads_sasl_spnego_bind(ADS_STRUCT *ads)
 	if (!(ads->auth.flags & ADS_AUTH_DISABLE_KERBEROS) &&
 	    got_kerberos_mechanism) 
 	{
-		status = ads_sasl_spnego_gensec_bind(ads, "GSS-SPNEGO",
-						     CRED_MUST_USE_KERBEROS,
-						     p.service, p.hostname,
-						     blob);
-		if (ADS_ERR_OK(status)) {
-			ads_free_service_principal(&p);
-			goto done;
+		const char *ccache_name = "MEMORY:ads_sasl_spnego_bind";
+		if (ads->auth.ccache_name != NULL) {
+			ccache_name = ads->auth.ccache_name;
 		}
 
-		DEBUG(10,("ads_sasl_spnego_gensec_bind(KRB5) failed with: %s, "
-			  "calling kinit\n", ads_errstr(status)));
+		if (ads->auth.password == NULL ||
+		    ads->auth.password[0] == '\0')
+		{
 
+			status = ads_sasl_spnego_gensec_bind(ads, "GSS-SPNEGO",
+							     CRED_MUST_USE_KERBEROS,
+							     p.service, p.hostname,
+							     blob);
+			if (ADS_ERR_OK(status)) {
+				ads_free_service_principal(&p);
+				goto done;
+			}
+
+			DEBUG(10,("ads_sasl_spnego_gensec_bind(KRB5) failed with: %s, "
+				  "calling kinit\n", ads_errstr(status)));
+		}
+
+		setenv(KRB5_ENV_CCNAME, ccache_name, 1);
 		status = ADS_ERROR_KRB5(ads_kinit_password(ads)); 
 
 		if (ADS_ERR_OK(status)) {
@@ -1003,21 +1024,29 @@ static ADS_STATUS ads_sasl_gssapi_bind(ADS_STRUCT *ads)
 {
 	ADS_STATUS status;
 	struct ads_service_principal p;
+	const char *ccache_name = "MEMORY:ads_sasl_gssapi_do_bind";
 
 	status = ads_generate_service_principal(ads, &p);
 	if (!ADS_ERR_OK(status)) {
 		return status;
 	}
 
-	status = ads_sasl_gssapi_do_bind(ads, p.name);
-	if (ADS_ERR_OK(status)) {
-		ads_free_service_principal(&p);
-		return status;
+	if (ads->auth.password == NULL ||
+	    ads->auth.password[0] == '\0') {
+		status = ads_sasl_gssapi_do_bind(ads, p.name);
+		if (ADS_ERR_OK(status)) {
+			ads_free_service_principal(&p);
+			return status;
+		}
+
+		DEBUG(10,("ads_sasl_gssapi_do_bind failed with: %s, "
+			  "calling kinit\n", ads_errstr(status)));
 	}
 
-	DEBUG(10,("ads_sasl_gssapi_do_bind failed with: %s, "
-		  "calling kinit\n", ads_errstr(status)));
-
+	if (ads->auth.ccache_name != NULL) {
+		ccache_name = ads->auth.ccache_name;
+	}
+	setenv(KRB5_ENV_CCNAME, ccache_name, 1);
 	status = ADS_ERROR_KRB5(ads_kinit_password(ads));
 
 	if (ADS_ERR_OK(status)) {

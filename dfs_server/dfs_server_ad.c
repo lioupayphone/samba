@@ -27,6 +27,7 @@
 #include "lib/tsocket/tsocket.h"
 #include "dfs_server/dfs_server_ad.h"
 #include "lib/util/util_net.h"
+#include "libds/common/roles.h"
 
 #define MAX_DFS_RESPONSE 56*1024 /* 56 Kb */
 
@@ -40,20 +41,18 @@ struct dc_set {
 
 static void shuffle_dc_set(struct dc_set *list)
 {
-       uint32_t i;
+	uint32_t i;
 
-       srandom(time(NULL));
+	for (i = list->count; i > 1; i--) {
+		uint32_t r;
+		const char *tmp;
 
-       for (i = list->count; i > 1; i--) {
-               uint32_t r;
-               const char *tmp;
+		r = generate_random() % i;
 
-               r = random() % i;
-
-               tmp = list->names[i - 1];
-               list->names[i - 1] = list->names[r];
-               list->names[r] = tmp;
-       }
+		tmp = list->names[i - 1];
+		list->names[i - 1] = list->names[r];
+		list->names[r] = tmp;
+	}
 }
 
 /*
@@ -801,6 +800,7 @@ NTSTATUS dfs_server_ad_get_referrals(struct loadparm_context *lp_ctx,
 	const char *netbios_name;
 	const char *dns_name;
 	const char **netbios_aliases;
+	char path_separator;
 
 	if (!lpcfg_host_msdfs(lp_ctx)) {
 		return NT_STATUS_FS_DRIVER_REQUIRED;
@@ -828,16 +828,18 @@ NTSTATUS dfs_server_ad_get_referrals(struct loadparm_context *lp_ctx,
 		return NT_STATUS_NO_MEMORY;
 	}
 
-	while(*server_name && *server_name == '\\') {
+	path_separator = (*server_name == '/') ? '/' : '\\';
+
+	while(*server_name && *server_name == path_separator) {
 		server_name++;
 	}
 
-	dfs_name = strchr(server_name, '\\');
+	dfs_name = strchr_m(server_name, path_separator);
 	if (dfs_name != NULL) {
 		dfs_name[0] = '\0';
 		dfs_name++;
 
-		link_path = strchr(dfs_name, '\\');
+		link_path = strchr_m(dfs_name, path_separator);
 		if (link_path != NULL) {
 			link_path[0] = '\0';
 			link_path++;

@@ -17,12 +17,22 @@
    along with this program; if not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "includes.h"
-#include "tdb.h"
+#include "replace.h"
 #include "system/network.h"
 #include "system/filesys.h"
 #include "system/wait.h"
-#include "../include/ctdb_private.h"
+
+#include <tdb.h>
+
+#include "lib/util/debug.h"
+#include "lib/util/samba_util.h"
+
+#include "ctdb_private.h"
+
+#include "common/reqid.h"
+#include "common/system.h"
+#include "common/common.h"
+#include "common/logging.h"
 
 /*
   return error string for last error
@@ -64,6 +74,66 @@ void ctdb_die(struct ctdb_context *ctdb, const char *msg)
 	exit(1);
 }
 
+/* Set the path of a helper program from envvar, falling back to
+ * dir/file if envvar unset. type is a string to print in log
+ * messages.  helper is assumed to point to a statically allocated
+ * array of size bytes, initialised to "".  If file is NULL don't fall
+ * back if envvar is unset.  If dir is NULL and envvar is unset (but
+ * file is not NULL) then this is an error.  Returns true if helper is
+ * set, either previously or this time. */
+bool ctdb_set_helper(const char *type, char *helper, size_t size,
+		     const char *envvar,
+		     const char *dir, const char *file)
+{
+	const char *t;
+	struct stat st;
+
+	if (helper[0] != '\0') {
+		/* Already set */
+		return true;
+	}
+
+	t = getenv(envvar);
+	if (t != NULL) {
+		if (strlen(t) >= size) {
+			DEBUG(DEBUG_ERR,
+			      ("Unable to set %s - path too long\n", type));
+			return false;
+		}
+
+		strncpy(helper, t, size);
+	} else if (file == NULL) {
+		return false;
+	} else if (dir == NULL) {
+			DEBUG(DEBUG_ERR,
+			      ("Unable to set %s - dir is NULL\n", type));
+		return false;
+	} else {
+		if (snprintf(helper, size, "%s/%s", dir, file) >= size) {
+			DEBUG(DEBUG_ERR,
+			      ("Unable to set %s - path too long\n", type));
+			return false;
+		}
+	}
+
+	if (stat(helper, &st) != 0) {
+		DEBUG(DEBUG_ERR,
+		      ("Unable to set %s \"%s\" - %s\n",
+		       type, helper, strerror(errno)));
+		return false;
+	}
+	if (!(st.st_mode & S_IXUSR)) {
+		DEBUG(DEBUG_ERR,
+		      ("Unable to set %s \"%s\" - not executable\n",
+		       type, helper));
+		return false;
+	}
+
+	DEBUG(DEBUG_NOTICE,
+	      ("Set %s to \"%s\"\n", type, helper));
+	return true;
+}
+
 /* Invoke an external program to do some sort of tracing on the CTDB
  * process.  This might block for a little while.  The external
  * program is specified by the environment variable
@@ -74,14 +144,16 @@ void ctdb_die(struct ctdb_context *ctdb, const char *msg)
 void ctdb_external_trace(void)
 {
 	int ret;
-	const char * t = getenv("CTDB_EXTERNAL_TRACE");
+	static char external_trace[PATH_MAX+1] = "";
 	char * cmd;
 
-	if (t == NULL) {
+	if (!ctdb_set_helper("external trace handler",
+			     external_trace, sizeof(external_trace),
+			     "CTDB_EXTERNAL_TRACE", NULL, NULL)) {
 		return;
 	}
 
-	cmd = talloc_asprintf(NULL, "%s %lu", t, (unsigned long) getpid());
+	cmd = talloc_asprintf(NULL, "%s %lu", external_trace, (unsigned long) getpid());
 	DEBUG(DEBUG_WARNING,("begin external trace: %s\n", cmd));
 	ret = system(cmd);
 	if (ret == -1) {
@@ -95,32 +167,26 @@ void ctdb_external_trace(void)
 /*
   parse a IP:port pair
 */
-int ctdb_parse_address(struct ctdb_context *ctdb,
-		       TALLOC_CTX *mem_ctx, const char *str,
-		       struct ctdb_address *address)
+int ctdb_parse_address(TALLOC_CTX *mem_ctx, const char *str,
+		       ctdb_sock_addr *address)
 {
 	struct servent *se;
-	ctdb_sock_addr addr;
+	int port;
 
 	setservent(0);
 	se = getservbyname("ctdb", "tcp");
 	endservent();
 
-	/* Parse IP address and re-convert to string.  This ensure correct
-	 * string form for IPv6 addresses.
-	 */
-	if (! parse_ip(str, NULL, 0, &addr)) {
+	if (se == NULL) {
+		port = CTDB_PORT;
+	} else {
+		port = ntohs(se->s_port);
+	}
+
+	if (! parse_ip(str, NULL, port, address)) {
 		return -1;
 	}
 
-	address->address = talloc_strdup(mem_ctx, ctdb_addr_to_str(&addr));
-	CTDB_NO_MEMORY(ctdb, address->address);
-
-	if (se == NULL) {
-		address->port = CTDB_PORT;
-	} else {
-		address->port = ntohs(se->s_port);
-	}
 	return 0;
 }
 
@@ -128,9 +194,10 @@ int ctdb_parse_address(struct ctdb_context *ctdb,
 /*
   check if two addresses are the same
 */
-bool ctdb_same_address(struct ctdb_address *a1, struct ctdb_address *a2)
+bool ctdb_same_address(ctdb_sock_addr *a1, ctdb_sock_addr *a2)
 {
-	return strcmp(a1->address, a2->address) == 0 && a1->port == a2->port;
+	return ctdb_same_ip(a1, a2) &&
+		ctdb_addr_to_port(a1) == ctdb_addr_to_port(a2);
 }
 
 
@@ -142,64 +209,16 @@ uint32_t ctdb_hash(const TDB_DATA *key)
 	return tdb_jenkins_hash(discard_const(key));
 }
 
-/*
-  a type checking varient of idr_find
- */
-static void *_idr_find_type(struct idr_context *idp, int id, const char *type, const char *location)
-{
-	void *p = idr_find(idp, id);
-	if (p && talloc_check_name(p, type) == NULL) {
-		DEBUG(DEBUG_ERR,("%s idr_find_type expected type %s  but got %s\n",
-			 location, type, talloc_get_name(p)));
-		return NULL;
-	}
-	return p;
-}
-
-uint32_t ctdb_reqid_new(struct ctdb_context *ctdb, void *state)
-{
-	int id = idr_get_new_above(ctdb->idr, state, ctdb->lastid+1, INT_MAX);
-	if (id < 0) {
-		DEBUG(DEBUG_DEBUG, ("Reqid wrap!\n"));
-		id = idr_get_new(ctdb->idr, state, INT_MAX);
-	}
-	ctdb->lastid = id;
-	return id;
-}
-
-void *_ctdb_reqid_find(struct ctdb_context *ctdb, uint32_t reqid, const char *type, const char *location)
-{
-	void *p;
-
-	p = _idr_find_type(ctdb->idr, reqid, type, location);
-	if (p == NULL) {
-		DEBUG(DEBUG_WARNING, ("Could not find idr:%u\n",reqid));
-	}
-
-	return p;
-}
-
-
-void ctdb_reqid_remove(struct ctdb_context *ctdb, uint32_t reqid)
-{
-	int ret;
-
-	ret = idr_remove(ctdb->idr, reqid);
-	if (ret != 0) {
-		DEBUG(DEBUG_ERR, ("Removing idr that does not exist\n"));
-	}
-}
-
 
 static uint32_t ctdb_marshall_record_size(TDB_DATA key,
 					  struct ctdb_ltdb_header *header,
 					  TDB_DATA data)
 {
-	return offsetof(struct ctdb_rec_data, data) + key.dsize +
+	return offsetof(struct ctdb_rec_data_old, data) + key.dsize +
 	       data.dsize + (header ? sizeof(*header) : 0);
 }
 
-static void ctdb_marshall_record_copy(struct ctdb_rec_data *rec,
+static void ctdb_marshall_record_copy(struct ctdb_rec_data_old *rec,
 				      uint32_t reqid,
 				      TDB_DATA key,
 				      struct ctdb_ltdb_header *header,
@@ -230,17 +249,18 @@ static void ctdb_marshall_record_copy(struct ctdb_rec_data *rec,
   note that header may be NULL. If not NULL then it is included in the data portion
   of the record
  */
-struct ctdb_rec_data *ctdb_marshall_record(TALLOC_CTX *mem_ctx, uint32_t reqid,
-					   TDB_DATA key,
-					   struct ctdb_ltdb_header *header,
-					   TDB_DATA data)
+struct ctdb_rec_data_old *ctdb_marshall_record(TALLOC_CTX *mem_ctx,
+					       uint32_t reqid,
+					       TDB_DATA key,
+					       struct ctdb_ltdb_header *header,
+					       TDB_DATA data)
 {
 	size_t length;
-	struct ctdb_rec_data *d;
+	struct ctdb_rec_data_old *d;
 
 	length = ctdb_marshall_record_size(key, header, data);
 
-	d = (struct ctdb_rec_data *)talloc_size(mem_ctx, length);
+	d = (struct ctdb_rec_data_old *)talloc_size(mem_ctx, length);
 	if (d == NULL) {
 		return NULL;
 	}
@@ -259,7 +279,7 @@ struct ctdb_marshall_buffer *ctdb_marshall_add(TALLOC_CTX *mem_ctx,
 					       struct ctdb_ltdb_header *header,
 					       TDB_DATA data)
 {
-	struct ctdb_rec_data *r;
+	struct ctdb_rec_data_old *r;
 	struct ctdb_marshall_buffer *m2;
 	uint32_t length, offset;
 
@@ -281,7 +301,7 @@ struct ctdb_marshall_buffer *ctdb_marshall_add(TALLOC_CTX *mem_ctx,
 		m2->db_id = db_id;
 	}
 
-	r = (struct ctdb_rec_data *)((uint8_t *)m2 + offset);
+	r = (struct ctdb_rec_data_old *)((uint8_t *)m2 + offset);
 	ctdb_marshall_record_copy(r, reqid, key, header, data, length);
 	m2->count++;
 
@@ -303,15 +323,17 @@ TDB_DATA ctdb_marshall_finish(struct ctdb_marshall_buffer *m)
      - pass r==NULL to start
      - loop the number of times indicated by m->count
 */
-struct ctdb_rec_data *ctdb_marshall_loop_next(struct ctdb_marshall_buffer *m, struct ctdb_rec_data *r,
-					      uint32_t *reqid,
-					      struct ctdb_ltdb_header *header,
-					      TDB_DATA *key, TDB_DATA *data)
+struct ctdb_rec_data_old *ctdb_marshall_loop_next(
+				struct ctdb_marshall_buffer *m,
+				struct ctdb_rec_data_old *r,
+				uint32_t *reqid,
+				struct ctdb_ltdb_header *header,
+				TDB_DATA *key, TDB_DATA *data)
 {
 	if (r == NULL) {
-		r = (struct ctdb_rec_data *)&m->data[0];
+		r = (struct ctdb_rec_data_old *)&m->data[0];
 	} else {
-		r = (struct ctdb_rec_data *)(r->length + (uint8_t *)r);
+		r = (struct ctdb_rec_data_old *)(r->length + (uint8_t *)r);
 	}
 
 	if (reqid != NULL) {
@@ -431,6 +453,136 @@ unsigned ctdb_addr_to_port(ctdb_sock_addr *addr)
 	return 0;
 }
 
+/* Add a node to a node map with given address and flags */
+static bool node_map_add(TALLOC_CTX *mem_ctx,
+			 const char *nstr, uint32_t flags,
+			 struct ctdb_node_map_old **node_map)
+{
+	ctdb_sock_addr addr;
+	uint32_t num;
+	size_t s;
+	struct ctdb_node_and_flags *n;
+
+	/* Might as well do this before trying to allocate memory */
+	if (ctdb_parse_address(mem_ctx, nstr, &addr) == -1) {
+		return false;
+	}
+
+	num = (*node_map)->num + 1;
+	s = offsetof(struct ctdb_node_map_old, nodes) +
+		num * sizeof(struct ctdb_node_and_flags);
+	*node_map = talloc_realloc_size(mem_ctx, *node_map, s);
+	if (*node_map == NULL) {
+		DEBUG(DEBUG_ERR, (__location__ " Out of memory\n"));
+		return false;
+	}
+
+	n = &(*node_map)->nodes[(*node_map)->num];
+	n->addr = addr;
+	n->pnn = (*node_map)->num;
+	n->flags = flags;
+
+	(*node_map)->num++;
+
+	return true;
+}
+
+/* Read a nodes file into a node map */
+struct ctdb_node_map_old *ctdb_read_nodes_file(TALLOC_CTX *mem_ctx,
+					   const char *nlist)
+{
+	char **lines;
+	int nlines;
+	int i;
+	struct ctdb_node_map_old *ret;
+
+	/* Allocate node map header */
+	ret = talloc_zero_size(mem_ctx, offsetof(struct ctdb_node_map_old, nodes));
+	if (ret == NULL) {
+		DEBUG(DEBUG_ERR, (__location__ " Out of memory\n"));
+		return false;
+	}
+
+	lines = file_lines_load(nlist, &nlines, 0, mem_ctx);
+	if (lines == NULL) {
+		DEBUG(DEBUG_ERR, ("Failed to read nodes file \"%s\"\n", nlist));
+		return false;
+	}
+	while (nlines > 0 && strcmp(lines[nlines-1], "") == 0) {
+		nlines--;
+	}
+
+	for (i=0; i < nlines; i++) {
+		char *node;
+		uint32_t flags;
+		size_t len;
+
+		node = lines[i];
+		/* strip leading spaces */
+		while((*node == ' ') || (*node == '\t')) {
+			node++;
+		}
+
+		len = strlen(node);
+
+		while ((len > 1) &&
+		       ((node[len-1] == ' ') || (node[len-1] == '\t')))
+		{
+			node[len-1] = '\0';
+			len--;
+		}
+
+		if (len == 0) {
+			continue;
+		}
+		if (*node == '#') {
+			/* A "deleted" node is a node that is
+			   commented out in the nodes file.  This is
+			   used instead of removing a line, which
+			   would cause subsequent nodes to change
+			   their PNN. */
+			flags = NODE_FLAGS_DELETED;
+			node = discard_const("0.0.0.0");
+		} else {
+			flags = 0;
+		}
+		if (!node_map_add(mem_ctx, node, flags, &ret)) {
+			talloc_free(lines);
+			TALLOC_FREE(ret);
+			return NULL;
+		}
+	}
+
+	talloc_free(lines);
+	return ret;
+}
+
+struct ctdb_node_map_old *
+ctdb_node_list_to_map(struct ctdb_node **nodes, uint32_t num_nodes,
+		      TALLOC_CTX *mem_ctx)
+{
+	uint32_t i;
+	size_t size;
+	struct ctdb_node_map_old *node_map;
+
+	size = offsetof(struct ctdb_node_map_old, nodes) +
+		num_nodes * sizeof(struct ctdb_node_and_flags);
+	node_map  = (struct ctdb_node_map_old *)talloc_zero_size(mem_ctx, size);
+	if (node_map == NULL) {
+		DEBUG(DEBUG_ERR,
+		      (__location__ " Failed to allocate nodemap array\n"));
+		return NULL;
+	}
+
+	node_map->num = num_nodes;
+	for (i=0; i<num_nodes; i++) {
+		node_map->nodes[i].addr  = nodes[i]->address;
+		node_map->nodes[i].pnn   = nodes[i]->pnn;
+		node_map->nodes[i].flags = nodes[i]->flags;
+	}
+
+	return node_map;
+}
 
 const char *ctdb_eventscript_call_names[] = {
 	"init",

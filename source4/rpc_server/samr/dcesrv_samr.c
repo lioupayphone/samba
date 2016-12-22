@@ -321,7 +321,6 @@ static NTSTATUS dcesrv_samr_LookupDomain(struct dcesrv_call_state *dce_call, TAL
 static NTSTATUS dcesrv_samr_EnumDomains(struct dcesrv_call_state *dce_call, TALLOC_CTX *mem_ctx,
 				 struct samr_EnumDomains *r)
 {
-	struct samr_connect_state *c_state;
 	struct dcesrv_handle *h;
 	struct samr_SamArray *array;
 	uint32_t i, start_i;
@@ -331,8 +330,6 @@ static NTSTATUS dcesrv_samr_EnumDomains(struct dcesrv_call_state *dce_call, TALL
 	*r->out.num_entries = 0;
 
 	DCESRV_PULL_HANDLE(h, r->in.connect_handle, SAMR_HANDLE_CONNECT);
-
-	c_state = h->data;
 
 	*r->out.resume_handle = 2;
 
@@ -507,6 +504,7 @@ static NTSTATUS dcesrv_samr_info_DomGeneralInformation(struct samr_domain_state 
 		break;
 	case ROLE_DOMAIN_PDC:
 	case ROLE_DOMAIN_BDC:
+	case ROLE_AUTO:
 		return NT_STATUS_INTERNAL_ERROR;
 	case ROLE_DOMAIN_MEMBER:
 		info->role = SAMR_ROLE_DOMAIN_MEMBER;
@@ -612,8 +610,9 @@ static NTSTATUS dcesrv_samr_info_DomInfo7(struct samr_domain_state *state,
 		}
 		break;
 	case ROLE_DOMAIN_PDC:
-		info->role = SAMR_ROLE_DOMAIN_PDC;
-		break;
+	case ROLE_DOMAIN_BDC:
+	case ROLE_AUTO:
+		return NT_STATUS_INTERNAL_ERROR;
 	case ROLE_DOMAIN_MEMBER:
 		info->role = SAMR_ROLE_DOMAIN_MEMBER;
 		break;
@@ -1247,13 +1246,16 @@ static NTSTATUS dcesrv_samr_CreateUser(struct dcesrv_call_state *dce_call, TALLO
 
 
 	/* a simple wrapper around samr_CreateUser2 works nicely */
-	r2.in.domain_handle = r->in.domain_handle;
-	r2.in.account_name = r->in.account_name;
-	r2.in.acct_flags = ACB_NORMAL;
-	r2.in.access_mask = r->in.access_mask;
-	r2.out.user_handle = r->out.user_handle;
-	r2.out.access_granted = &access_granted;
-	r2.out.rid = r->out.rid;
+
+	r2 = (struct samr_CreateUser2) {
+		.in.domain_handle = r->in.domain_handle,
+		.in.account_name = r->in.account_name,
+		.in.acct_flags = ACB_NORMAL,
+		.in.access_mask = r->in.access_mask,
+		.out.user_handle = r->out.user_handle,
+		.out.access_granted = &access_granted,
+		.out.rid = r->out.rid
+	};
 
 	return dcesrv_samr_CreateUser2(dce_call, mem_ctx, &r2);
 }
@@ -1891,13 +1893,11 @@ static NTSTATUS dcesrv_samr_SetGroupInfo(struct dcesrv_call_state *dce_call, TAL
 	struct dcesrv_handle *h;
 	struct samr_account_state *g_state;
 	struct ldb_message *msg;
-	struct ldb_context *sam_ctx;
 	int ret;
 
 	DCESRV_PULL_HANDLE(h, r->in.group_handle, SAMR_HANDLE_GROUP);
 
 	g_state = h->data;
-	sam_ctx = g_state->sam_ctx;
 
 	msg = ldb_msg_new(mem_ctx);
 	if (msg == NULL) {
@@ -2343,13 +2343,11 @@ static NTSTATUS dcesrv_samr_SetAliasInfo(struct dcesrv_call_state *dce_call, TAL
 	struct dcesrv_handle *h;
 	struct samr_account_state *a_state;
 	struct ldb_message *msg;
-	struct ldb_context *sam_ctx;
 	int ret;
 
 	DCESRV_PULL_HANDLE(h, r->in.alias_handle, SAMR_HANDLE_ALIAS);
 
 	a_state = h->data;
-	sam_ctx = a_state->sam_ctx;
 
 	msg = ldb_msg_new(mem_ctx);
 	if (msg == NULL) {
@@ -4021,9 +4019,11 @@ static NTSTATUS dcesrv_samr_QueryUserInfo2(struct dcesrv_call_state *dce_call, T
 	struct samr_QueryUserInfo r1;
 	NTSTATUS status;
 
-	r1.in.user_handle = r->in.user_handle;
-	r1.in.level  = r->in.level;
-	r1.out.info  = r->out.info;
+	r1 = (struct samr_QueryUserInfo) {
+		.in.user_handle = r->in.user_handle,
+		.in.level  = r->in.level,
+		.out.info  = r->out.info
+	};
 
 	status = dcesrv_samr_QueryUserInfo(dce_call, mem_ctx, &r1);
 

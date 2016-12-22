@@ -611,8 +611,10 @@ static NTSTATUS ntlmssp_server_preauth(struct gensec_security *gensec_security,
 						 "user=[%s] domain=[%s] "
 						 "workstation=[%s]\n",
 						 __func__,
-						 timeval_str_buf(&ct, true, &tmp1),
-						 timeval_str_buf(&st, true, &tmp2),
+						 timeval_str_buf(&ct, false,
+								 true, &tmp1),
+						 timeval_str_buf(&st, false,
+								 true, &tmp2),
 						 ntlmssp_state->user,
 						 ntlmssp_state->domain,
 						 ntlmssp_state->client.netbios_name));
@@ -636,7 +638,7 @@ static NTSTATUS ntlmssp_server_preauth(struct gensec_security *gensec_security,
 		DEBUG(1,("%s: challenge invalid (expired %s) for "
 			 "user=[%s] domain=[%s] workstation=[%s]\n",
 			 __func__,
-			 timeval_str_buf(&endtime, true, &tmp),
+			 timeval_str_buf(&endtime, false, true, &tmp),
 			 ntlmssp_state->user, ntlmssp_state->domain,
 			 ntlmssp_state->client.netbios_name));
 		return NT_STATUS_INVALID_PARAMETER;

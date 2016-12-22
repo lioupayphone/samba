@@ -32,16 +32,15 @@
 /*****************************************************************
  Returns the SID mapped to the given UID.
  If mapping is not possible returns an error.
-*****************************************************************/  
+*****************************************************************/
 
-NTSTATUS idmap_uid_to_sid(const char *domname, struct dom_sid *sid, uid_t uid)
+NTSTATUS idmap_uid_to_sid(struct dom_sid *sid, uid_t uid)
 {
 	NTSTATUS ret;
 	struct id_map map;
 	bool expired;
 
-	DEBUG(10,("idmap_uid_to_sid: uid = [%lu], domain = '%s'\n",
-		  (unsigned long)uid, domname?domname:"NULL"));
+	DEBUG(10, ("idmap_uid_to_sid: uid = [%lu]\n", (unsigned long)uid));
 
 	if (winbindd_use_idmap_cache()
 	    && idmap_cache_find_uid2sid(uid, sid, &expired)) {
@@ -96,16 +95,15 @@ backend:
 /*****************************************************************
  Returns SID mapped to the given GID.
  If mapping is not possible returns an error.
-*****************************************************************/  
+*****************************************************************/
 
-NTSTATUS idmap_gid_to_sid(const char *domname, struct dom_sid *sid, gid_t gid)
+NTSTATUS idmap_gid_to_sid(struct dom_sid *sid, gid_t gid)
 {
 	NTSTATUS ret;
 	struct id_map map;
 	bool expired;
 
-	DEBUG(10,("idmap_gid_to_sid: gid = [%lu], domain = '%s'\n",
-		  (unsigned long)gid, domname?domname:"NULL"));
+	DEBUG(10, ("idmap_gid_to_sid: gid = [%lu]\n", (unsigned long)gid));
 
 	if (winbindd_use_idmap_cache()
 	    && idmap_cache_find_gid2sid(gid, sid, &expired)) {
@@ -162,11 +160,6 @@ backend:
  */
 bool idmap_unix_id_is_in_range(uint32_t id, struct idmap_domain *dom)
 {
-	if (id == 0) {
-		/* 0 is not an allowed unix id for id mapping */
-		return false;
-	}
-
 	if ((dom->low_id && (id < dom->low_id)) ||
 	    (dom->high_id && (id > dom->high_id)))
 	{

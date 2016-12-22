@@ -2,7 +2,7 @@
 
 bld.SAMBA_PIDL_LIST('PIDL',
                     '''atsvc.idl auth.idl drsuapi.idl epmapper.idl initshutdown.idl
-                       misc.idl ntlmssp.idl schannel.idl trkwks.idl
+                       misc.idl ntlmssp.idl negoex.idl schannel.idl trkwks.idl
                        audiosrv.idl dfsblobs.idl dsbackup.idl eventlog.idl file_id.idl keysvc.idl
                        msgsvc.idl ntsvcs.idl remact.idl security.idl smb_acl.idl unixinfo.idl wzcsvc.idl
                        browser.idl dfs.idl dssetup.idl frsapi.idl krb5pac.idl
@@ -13,7 +13,8 @@ bld.SAMBA_PIDL_LIST('PIDL',
                        notify.idl
                        smb2_lease_struct.idl
                        policyagent.idl scerpc.idl svcctl.idl wkssvc.idl eventlog6.idl backupkey.idl
-                       fsrvp.idl witness.idl''',
+                       fsrvp.idl bkupblobs.idl fscc.idl frsblobs.idl witness.idl clusapi.idl
+                       mdssvc.idl''',
                     options='--header --ndr-parser --samba3-ndr-server --server --client --python',
                     output_dir='../gen_ndr')
 
@@ -28,7 +29,13 @@ bld.SAMBA_PIDL_LIST('PIDL',
                     output_dir='../gen_ndr')
 
 bld.SAMBA_PIDL_LIST('PIDL',
-                    'rap.idl ntprinting.idl preg.idl ioctl.idl printcap.idl',
+                    'messaging.idl',
+                    options='--header --ndr-parser',
+                    output_dir='../gen_ndr')
+
+bld.SAMBA_PIDL_LIST('PIDL',
+                    '''rap.idl ntprinting.idl preg.idl ioctl.idl printcap.idl
+                       fsrvp_state.idl''',
                     options='--header --ndr-parser',
                     output_dir='../gen_ndr')
 

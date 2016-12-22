@@ -76,6 +76,60 @@
 </refsect1>
 
   <refsect1>
+    <title>Recovery Lock</title>
+
+    <para>
+      CTDB uses a <emphasis>recovery lock</emphasis> to avoid a
+      <emphasis>split brain</emphasis>, where a cluster becomes
+      partitioned and each partition attempts to operate
+      independently.  Issues that can result from a split brain
+      include file data corruption, because file locking metadata may
+      not be tracked correctly.
+    </para>
+
+    <para>
+      CTDB uses a <emphasis>cluster leader and follower</emphasis>
+      model of cluster management.  All nodes in a cluster elect one
+      node to be the leader.  The leader node coordinates privileged
+      operations such as database recovery and IP address failover.
+      CTDB refers to the leader node as the <emphasis>recovery
+      master</emphasis>.  This node takes and holds the recovery lock
+      to assert its privileged role in the cluster.
+    </para>
+
+    <para>
+      The recovery lock is implemented using a file residing in shared
+      storage (usually) on a cluster filesystem.  To support a
+      recovery lock the cluster filesystem must support lock
+      coherence.  See
+      <citerefentry><refentrytitle>ping_pong</refentrytitle>
+      <manvolnum>1</manvolnum></citerefentry> for more details.
+    </para>
+
+    <para>
+      If a cluster becomes partitioned (for example, due to a
+      communication failure) and a different recovery master is
+      elected by the nodes in each partition, then only one of these
+      recovery masters will be able to take the recovery lock.  The
+      recovery master in the "losing" partition will not be able to
+      take the recovery lock and will be excluded from the cluster.
+      The nodes in the "losing" partition will elect each node in turn
+      as their recovery master so eventually all the nodes in that
+      partition will be excluded.
+    </para>
+
+    <para>
+      CTDB does sanity checks to ensure that the recovery lock is held
+      as expected.
+    </para>
+
+    <para>
+      CTDB can run without a recovery lock but this is not recommended
+      as there will be no protection from split brains.
+    </para>
+  </refsect1>
+
+  <refsect1>
     <title>Private vs Public addresses</title>
 
     <para>
@@ -113,7 +167,7 @@
         <varname>CTDB_NODES</varname> configuration variable (see
         <citerefentry><refentrytitle>ctdbd.conf</refentrytitle>
         <manvolnum>5</manvolnum></citerefentry>, default
-        <filename>/etc/ctdb/nodes</filename>).  This file contains the
+        <filename>/usr/local/etc/ctdb/nodes</filename>).  This file contains the
         list of private addresses for all nodes in the cluster, one
         per line. This file must be the same on all nodes in the
         cluster.
@@ -129,7 +183,7 @@
       </para>
 
       <para>
-	Example <filename>/etc/ctdb/nodes</filename> for a four node
+	Example <filename>/usr/local/etc/ctdb/nodes</filename> for a four node
 	cluster:
       </para>
       <screen format="linespecific">
@@ -165,7 +219,7 @@
 	configuration variable (see
 	<citerefentry><refentrytitle>ctdbd.conf</refentrytitle>
 	<manvolnum>5</manvolnum></citerefentry>, recommended
-	<filename>/etc/ctdb/public_addresses</filename>).  This file
+	<filename>/usr/local/etc/ctdb/public_addresses</filename>).  This file
 	contains a list of the public addresses that the node is
 	capable of hosting, one per line.  Each entry also contains
 	the netmask and the interface to which the address should be
@@ -173,7 +227,7 @@
       </para>
 
       <para>
-	Example <filename>/etc/ctdb/public_addresses</filename> for a
+	Example <filename>/usr/local/etc/ctdb/public_addresses</filename> for a
 	node that can host 4 public addresses, on 2 different
 	interfaces:
       </para>
@@ -194,19 +248,19 @@
 	Example: 4 nodes partitioned into two subgroups:
       </para>
       <screen format="linespecific">
-Node 0:/etc/ctdb/public_addresses
+Node 0:/usr/local/etc/ctdb/public_addresses
 	10.1.1.1/24 eth1
 	10.1.1.2/24 eth1
 
-Node 1:/etc/ctdb/public_addresses
+Node 1:/usr/local/etc/ctdb/public_addresses
 	10.1.1.1/24 eth1
 	10.1.1.2/24 eth1
 
-Node 2:/etc/ctdb/public_addresses
+Node 2:/usr/local/etc/ctdb/public_addresses
 	10.1.2.1/24 eth2
 	10.1.2.2/24 eth2
 
-Node 3:/etc/ctdb/public_addresses
+Node 3:/usr/local/etc/ctdb/public_addresses
 	10.1.2.1/24 eth2
 	10.1.2.2/24 eth2
       </screen>
@@ -392,18 +446,6 @@ Node 3:/etc/ctdb/public_addresses
 	</listitem>
       </varlistentry>
 
-      <varlistentry>
-	<term>NATGW</term>
-	<listitem>
-	  <para>
-	    Indicates that this node is configured to become the NAT
-	    gateway master in a NAT gateway group.  See the
-	    <citetitle>NAT GATEWAY</citetitle> section for more
-	    details.
-	  </para>
-	</listitem>
-      </varlistentry>
-
     </variablelist>
 
     <para>
@@ -534,7 +576,29 @@ CTDB_LVS_PUBLIC_IP=10.1.1.237
 
     </refsect2>
   </refsect1>
-    
+
+  <refsect1>
+    <title>TRACKING AND RESETTING TCP CONNECTIONS</title>
+
+    <para>
+      CTDB tracks TCP connections from clients to public IP addresses,
+      on known ports.  When an IP address moves from one node to
+      another, all existing TCP connections to that IP address are
+      reset.  The node taking over this IP address will also send
+      gratuitous ARPs (for IPv4, or neighbour advertisement, for
+      IPv6).  This allows clients to reconnect quickly, rather than
+      waiting for TCP timeouts, which can be very long.
+    </para>
+
+    <para>
+      It is important that established TCP connections do not survive
+      a release and take of a public IP address on the same node.
+      Such connections can get out of sync with sequence and ACK
+      numbers, potentially causing a disruptive ACK storm.
+    </para>
+
+  </refsect1>
+
   <refsect1>
     <title>NAT GATEWAY</title>
 
@@ -595,7 +659,7 @@ CTDB_LVS_PUBLIC_IP=10.1.1.237
 	NATGW is usually configured similar to the following example configuration:
       </para>
       <screen format="linespecific">
-CTDB_NATGW_NODES=/etc/ctdb/natgw_nodes
+CTDB_NATGW_NODES=/usr/local/etc/ctdb/natgw_nodes
 CTDB_NATGW_PRIVATE_NETWORK=192.168.1.0/24
 CTDB_NATGW_PUBLIC_IP=10.0.0.227/24
 CTDB_NATGW_PUBLIC_IFACE=eth0
@@ -605,14 +669,15 @@ CTDB_NATGW_DEFAULT_GATEWAY=10.0.0.1
       <para>
 	Normally any node in a NATGW group can act as the NATGW
 	master.  Some configurations may have special nodes that lack
-	connectivity to a public network.  In such cases,
-	<varname>CTDB_NATGW_SLAVE_ONLY</varname> can be used to limit the
-	NATGW functionality of thos nodes.
+	connectivity to a public network.  In such cases, those nodes
+	can be flagged with the "slave-only" option in the
+	<varname>CTDB_NATGW_NODES</varname> file to limit the NATGW
+	functionality of those nodes.
       </para>
 
       <para>
 	See the <citetitle>NAT GATEWAY</citetitle> section in
-	<citerefentry><refentrytitle>ctdb.conf</refentrytitle>
+	<citerefentry><refentrytitle>ctdbd.conf</refentrytitle>
 	<manvolnum>5</manvolnum></citerefentry> for more details of
 	NATGW configuration.
       </para>
@@ -817,12 +882,12 @@ CTDB_NATGW_DEFAULT_GATEWAY=10.0.0.1
       </para>
 
       <screen>
-/etc/ctdb/public_addresses:
+/usr/local/etc/ctdb/public_addresses:
 
   192.168.1.98	eth2,eth3
   192.168.1.99	eth2,eth3
 
-/etc/ctdb/policy_routing:
+/usr/local/etc/ctdb/policy_routing:
 
   192.168.1.98 192.168.1.0/24
   192.168.1.98 192.168.200.0/24	192.168.1.254
@@ -856,9 +921,9 @@ CTDB_NATGW_DEFAULT_GATEWAY=10.0.0.1
       The specified script must be executable.  
     </para>
     <para>
-      Use of the provided <filename>/etc/ctdb/notify.sh</filename>
+      Use of the provided <filename>/usr/local/etc/ctdb/notify.sh</filename>
       script is recommended.  It executes files in
-      <filename>/etc/ctdb/notify.d/</filename>.
+      <filename>/usr/local/etc/ctdb/notify.d/</filename>.
     </para>
     <para>
       CTDB currently generates notifications after CTDB changes to
@@ -883,9 +948,6 @@ CTDB_NATGW_DEFAULT_GATEWAY=10.0.0.1
     </para>
 
     <simplelist>
-      <member>EMERG (-3)</member>
-      <member>ALERT (-2)</member>
-      <member>CRIT (-1)</member>
       <member>ERR (0)</member>
       <member>WARNING (1)</member>
       <member>NOTICE (2)</member>

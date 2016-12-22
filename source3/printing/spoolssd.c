@@ -20,8 +20,6 @@
 #include "serverid.h"
 #include "smbd/smbd.h"
 
-#include "lib/util/util_process.h"
-
 #include "messages.h"
 #include "include/printing.h"
 #include "printing/nt_printing_migrate_internal.h"
@@ -107,7 +105,7 @@ static void update_conf(struct tevent_context *ev,
 			struct messaging_context *msg)
 {
 	change_to_root_user();
-	lp_load(get_dyn_CONFIGFILE(), true, false, false, true);
+	lp_load_global(get_dyn_CONFIGFILE());
 	load_printers(ev, msg);
 
 	spoolss_reopen_logs(spoolss_child_id);
@@ -268,14 +266,11 @@ static bool spoolss_child_init(struct tevent_context *ev_ctx,
 	struct messaging_context *msg_ctx = server_messaging_context();
 	bool ok;
 
-	status = reinit_after_fork(msg_ctx, ev_ctx,
-				   true);
+	status = reinit_after_fork(msg_ctx, ev_ctx, true, "spoolssd-child");
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0,("reinit_after_fork() failed\n"));
 		smb_panic("reinit_after_fork() failed");
 	}
-
-	prctl_set_comment("spoolssd-child");
 
 	spoolss_child_id = child_id;
 	spoolss_reopen_logs(child_id);
@@ -315,14 +310,14 @@ static bool spoolss_child_init(struct tevent_context *ev_ctx,
 
 	status = rpc_winreg_init(NULL);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register winreg rpc inteface! (%s)\n",
+		DEBUG(0, ("Failed to register winreg rpc interface! (%s)\n",
 			  nt_errstr(status)));
 		return false;
 	}
 
 	status = rpc_spoolss_init(&spoolss_cb);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register spoolss rpc inteface! (%s)\n",
+		DEBUG(0, ("Failed to register spoolss rpc interface! (%s)\n",
 			  nt_errstr(status)));
 		return false;
 	}
@@ -645,15 +640,12 @@ pid_t start_spoolssd(struct tevent_context *ev_ctx,
 		return pid;
 	}
 
-	status = reinit_after_fork(msg_ctx,
-				   ev_ctx,
-				   true);
+	status = smbd_reinit_after_fork(msg_ctx, ev_ctx, true,
+					"spoolssd-master");
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0,("reinit_after_fork() failed\n"));
 		smb_panic("reinit_after_fork() failed");
 	}
-
-	prctl_set_comment("spoolssd-master");
 
 	/* save the parent process id so the children can use it later */
 	parent_id = messaging_server_id(msg_ctx);
@@ -744,14 +736,14 @@ pid_t start_spoolssd(struct tevent_context *ev_ctx,
 
 	status = rpc_winreg_init(NULL);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register winreg rpc inteface! (%s)\n",
+		DEBUG(0, ("Failed to register winreg rpc interface! (%s)\n",
 			  nt_errstr(status)));
 		exit(1);
 	}
 
 	status = rpc_spoolss_init(&spoolss_cb);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register spoolss rpc inteface! (%s)\n",
+		DEBUG(0, ("Failed to register spoolss rpc interface! (%s)\n",
 			  nt_errstr(status)));
 		exit(1);
 	}

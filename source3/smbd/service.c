@@ -178,9 +178,10 @@ bool set_conn_connectpath(connection_struct *conn, const char *connectpath)
  Load parameters specific to a connection/service.
 ****************************************************************************/
 
-bool set_current_service(connection_struct *conn, uint16 flags, bool do_chdir)
+bool set_current_service(connection_struct *conn, uint16_t flags, bool do_chdir)
 {
 	int snum;
+	enum remote_arch_types ra_type;
 
 	if (!conn)  {
 		last_conn = NULL;
@@ -206,28 +207,35 @@ bool set_current_service(connection_struct *conn, uint16 flags, bool do_chdir)
 	last_conn = conn;
 	last_flags = flags;
 
-	/* Obey the client case sensitivity requests - only for clients that support it. */
+	/*
+	 * Obey the client case sensitivity requests - only for clients that
+	 * support it. */
 	switch (lp_case_sensitive(snum)) {
-		case Auto:
-			{
-				/* We need this uglyness due to DOS/Win9x clients that lie about case insensitivity. */
-				enum remote_arch_types ra_type = get_remote_arch();
-				if ((ra_type != RA_SAMBA) && (ra_type != RA_CIFSFS)) {
-					/* Client can't support per-packet case sensitive pathnames. */
-					conn->case_sensitive = False;
-				} else {
-					conn->case_sensitive = !(flags & FLAG_CASELESS_PATHNAMES);
-				}
-			}
-			break;
-		case True:
-			conn->case_sensitive = True;
-			break;
-		default:
-			conn->case_sensitive = False;
-			break;
+	case Auto:
+		/*
+		 * We need this uglyness due to DOS/Win9x clients that lie
+		 * about case insensitivity. */
+		ra_type = get_remote_arch();
+		if (conn->sconn->using_smb2) {
+			conn->case_sensitive = false;
+		} else if ((ra_type != RA_SAMBA) && (ra_type != RA_CIFSFS)) {
+			/*
+			 * Client can't support per-packet case sensitive
+			 * pathnames. */
+			conn->case_sensitive = false;
+		} else {
+			conn->case_sensitive =
+					!(flags & FLAG_CASELESS_PATHNAMES);
+		}
+	break;
+	case True:
+		conn->case_sensitive = true;
+		break;
+	default:
+		conn->case_sensitive = false;
+		break;
 	}
-	return(True);
+	return true;
 }
 
 /****************************************************************************
@@ -669,7 +677,9 @@ static NTSTATUS make_connection_snum(struct smbXsrv_connection *xconn,
 
 	if (SMB_VFS_CONNECT(conn, lp_servicename(talloc_tos(), snum),
 			    conn->session_info->unix_info->unix_name) < 0) {
-		DEBUG(0,("make_connection: VFS make connection failed!\n"));
+		DBG_WARNING("SMB_VFS_CONNECT for service '%s' at '%s' failed: %s\n",
+			    lp_servicename(talloc_tos(), snum), conn->connectpath,
+			    strerror(errno));
 		status = NT_STATUS_UNSUCCESSFUL;
 		goto err_root_exit;
 	}
@@ -678,7 +688,7 @@ static NTSTATUS make_connection_snum(struct smbXsrv_connection *xconn,
 	on_err_call_dis_hook = true;
 
 	if ((!conn->printer) && (!conn->ipc) &&
-	    lp_change_notify(conn->params)) {
+	    lp_change_notify()) {
 		if (sconn->notify_ctx == NULL) {
 			sconn->notify_ctx = notify_init(
 				sconn, sconn->msg_ctx, sconn->ev_ctx);

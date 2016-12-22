@@ -31,36 +31,43 @@ static NTSTATUS get_file_handle_for_metadata(connection_struct *conn,
 				files_struct **ret_fsp,
 				bool *need_close);
 
-static void dos_mode_debug_print(uint32_t mode)
+static void dos_mode_debug_print(const char *func, uint32_t mode)
 {
-	DEBUG(8,("dos_mode returning "));
+	fstring modestr;
+
+	if (DEBUGLEVEL < DBGLVL_INFO) {
+		return;
+	}
+
+	modestr[0] = '\0';
 
 	if (mode & FILE_ATTRIBUTE_HIDDEN) {
-		DEBUG(8, ("h"));
+		fstrcat(modestr, "h");
 	}
 	if (mode & FILE_ATTRIBUTE_READONLY) {
-		DEBUG(8, ("r"));
+		fstrcat(modestr, "r");
 	}
 	if (mode & FILE_ATTRIBUTE_SYSTEM) {
-		DEBUG(8, ("s"));
+		fstrcat(modestr, "s");
 	}
 	if (mode & FILE_ATTRIBUTE_DIRECTORY) {
-		DEBUG(8, ("d"));
+		fstrcat(modestr, "d");
 	}
 	if (mode & FILE_ATTRIBUTE_ARCHIVE) {
-		DEBUG(8, ("a"));
+		fstrcat(modestr, "a");
 	}
 	if (mode & FILE_ATTRIBUTE_SPARSE) {
-		DEBUG(8, ("[sparse]"));
+		fstrcat(modestr, "[sparse]");
 	}
 	if (mode & FILE_ATTRIBUTE_OFFLINE) {
-		DEBUG(8, ("[offline]"));
+		fstrcat(modestr, "[offline]");
 	}
 	if (mode & FILE_ATTRIBUTE_COMPRESSED) {
-		DEBUG(8, ("[compressed]"));
+		fstrcat(modestr, "[compressed]");
 	}
 
-	DEBUG(8,("\n"));
+	DBG_INFO("%s returning (0x%x): \"%s\"\n", func, (unsigned)mode,
+		 modestr);
 }
 
 static uint32_t filter_mode_by_protocol(uint32_t mode)
@@ -192,8 +199,9 @@ mode_t unix_mode(connection_struct *conn, int dosmode,
 		}
 	}
 
-	DEBUG(3,("unix_mode(%s) returning 0%o\n", smb_fname_str_dbg(smb_fname),
-		 (int)result));
+	DBG_INFO("unix_mode(%s) returning 0%o\n",
+		 smb_fname_str_dbg(smb_fname), (int)result);
+
 	return(result);
 }
 
@@ -201,7 +209,7 @@ mode_t unix_mode(connection_struct *conn, int dosmode,
  Change a unix mode to a dos mode.
 ****************************************************************************/
 
-static uint32 dos_mode_from_sbuf(connection_struct *conn,
+static uint32_t dos_mode_from_sbuf(connection_struct *conn,
 				 const struct smb_filename *smb_fname)
 {
 	int result = 0;
@@ -239,15 +247,8 @@ static uint32 dos_mode_from_sbuf(connection_struct *conn,
 
 	result |= set_link_read_only_flag(&smb_fname->st);
 
-	DEBUG(8,("dos_mode_from_sbuf returning "));
+	dos_mode_debug_print(__func__, result);
 
-	if (result & FILE_ATTRIBUTE_HIDDEN) DEBUG(8, ("h"));
-	if (result & FILE_ATTRIBUTE_READONLY ) DEBUG(8, ("r"));
-	if (result & FILE_ATTRIBUTE_SYSTEM) DEBUG(8, ("s"));
-	if (result & FILE_ATTRIBUTE_DIRECTORY   ) DEBUG(8, ("d"));
-	if (result & FILE_ATTRIBUTE_ARCHIVE  ) DEBUG(8, ("a"));
-
-	DEBUG(8,("\n"));
 	return result;
 }
 
@@ -258,7 +259,7 @@ static uint32 dos_mode_from_sbuf(connection_struct *conn,
 
 static bool get_ea_dos_attribute(connection_struct *conn,
 				 struct smb_filename *smb_fname,
-				 uint32 *pattr)
+				 uint32_t *pattr)
 {
 	struct xattr_DOSATTRIB dosattrib;
 	enum ndr_err_code ndr_err;
@@ -278,18 +279,9 @@ static bool get_ea_dos_attribute(connection_struct *conn,
 				   SAMBA_XATTR_DOS_ATTRIB, attrstr,
 				   sizeof(attrstr));
 	if (sizeret == -1) {
-		if (errno == ENOSYS
-#if defined(ENOTSUP)
-			|| errno == ENOTSUP) {
-#else
-				) {
-#endif
-			DEBUG(1,("get_ea_dos_attribute: Cannot get attribute "
-				 "from EA on file %s: Error = %s\n",
-				 smb_fname_str_dbg(smb_fname),
-				 strerror(errno)));
-			set_store_dos_attributes(SNUM(conn), False);
-		}
+		DBG_INFO("Cannot get attribute "
+			 "from EA on file %s: Error = %s\n",
+			 smb_fname_str_dbg(smb_fname), strerror(errno));
 		return False;
 	}
 
@@ -364,17 +356,9 @@ static bool get_ea_dos_attribute(connection_struct *conn,
 		dosattr |= FILE_ATTRIBUTE_DIRECTORY;
 	}
 	/* FILE_ATTRIBUTE_SPARSE is valid on get but not on set. */
-	*pattr |= (uint32)(dosattr & (SAMBA_ATTRIBUTES_MASK|FILE_ATTRIBUTE_SPARSE));
+	*pattr |= (uint32_t)(dosattr & (SAMBA_ATTRIBUTES_MASK|FILE_ATTRIBUTE_SPARSE));
 
-	DEBUG(8,("get_ea_dos_attribute returning (0x%x)", dosattr));
-
-	if (dosattr & FILE_ATTRIBUTE_HIDDEN) DEBUG(8, ("h"));
-	if (dosattr & FILE_ATTRIBUTE_READONLY ) DEBUG(8, ("r"));
-	if (dosattr & FILE_ATTRIBUTE_SYSTEM) DEBUG(8, ("s"));
-	if (dosattr & FILE_ATTRIBUTE_DIRECTORY   ) DEBUG(8, ("d"));
-	if (dosattr & FILE_ATTRIBUTE_ARCHIVE  ) DEBUG(8, ("a"));
-
-	DEBUG(8,("\n"));
+	dos_mode_debug_print(__func__, *pattr);
 
 	return True;
 }
@@ -386,7 +370,7 @@ static bool get_ea_dos_attribute(connection_struct *conn,
 
 static bool set_ea_dos_attribute(connection_struct *conn,
 				 struct smb_filename *smb_fname,
-				 uint32 dosmode)
+				 uint32_t dosmode)
 {
 	struct xattr_DOSATTRIB dosattrib;
 	enum ndr_err_code ndr_err;
@@ -429,18 +413,9 @@ static bool set_ea_dos_attribute(connection_struct *conn,
 		files_struct *fsp = NULL;
 
 		if((errno != EPERM) && (errno != EACCES)) {
-			if (errno == ENOSYS
-#if defined(ENOTSUP)
-				|| errno == ENOTSUP) {
-#else
-				) {
-#endif
-				DEBUG(1,("set_ea_dos_attributes: Cannot set "
-					 "attribute EA on file %s: Error = %s\n",
-					 smb_fname_str_dbg(smb_fname),
-					 strerror(errno) ));
-				set_store_dos_attributes(SNUM(conn), False);
-			}
+			DBG_INFO("Cannot set "
+				 "attribute EA on file %s: Error = %s\n",
+				 smb_fname_str_dbg(smb_fname), strerror(errno));
 			return false;
 		}
 
@@ -490,10 +465,10 @@ static bool set_ea_dos_attribute(connection_struct *conn,
  Change a unix mode to a dos mode for an ms dfs link.
 ****************************************************************************/
 
-uint32 dos_mode_msdfs(connection_struct *conn,
+uint32_t dos_mode_msdfs(connection_struct *conn,
 		      const struct smb_filename *smb_fname)
 {
-	uint32 result = 0;
+	uint32_t result = 0;
 
 	DEBUG(8,("dos_mode_msdfs: %s\n", smb_fname_str_dbg(smb_fname)));
 
@@ -538,16 +513,7 @@ uint32 dos_mode_msdfs(connection_struct *conn,
 	 */
 	result |= FILE_ATTRIBUTE_REPARSE_POINT;
 
-	DEBUG(8,("dos_mode_msdfs returning "));
-
-	if (result & FILE_ATTRIBUTE_HIDDEN) DEBUG(8, ("h"));
-	if (result & FILE_ATTRIBUTE_READONLY ) DEBUG(8, ("r"));
-	if (result & FILE_ATTRIBUTE_SYSTEM) DEBUG(8, ("s"));
-	if (result & FILE_ATTRIBUTE_DIRECTORY   ) DEBUG(8, ("d"));
-	if (result & FILE_ATTRIBUTE_ARCHIVE  ) DEBUG(8, ("a"));
-	if (result & FILE_ATTRIBUTE_SPARSE ) DEBUG(8, ("[sparse]"));
-
-	DEBUG(8,("\n"));
+	dos_mode_debug_print(__func__, result);
 
 	return(result);
 }
@@ -592,9 +558,9 @@ err_out:
  if "store dos attributes" is true.
 ****************************************************************************/
 
-uint32 dos_mode(connection_struct *conn, struct smb_filename *smb_fname)
+uint32_t dos_mode(connection_struct *conn, struct smb_filename *smb_fname)
 {
-	uint32 result = 0;
+	uint32_t result = 0;
 	bool offline;
 
 	DEBUG(8,("dos_mode: %s\n", smb_fname_str_dbg(smb_fname)));
@@ -652,7 +618,7 @@ uint32 dos_mode(connection_struct *conn, struct smb_filename *smb_fname)
 
 	result = filter_mode_by_protocol(result);
 
-	dos_mode_debug_print(result);
+	dos_mode_debug_print(__func__, result);
 
 	return result;
 }
@@ -665,7 +631,7 @@ uint32 dos_mode(connection_struct *conn, struct smb_filename *smb_fname)
 ********************************************************************/
 
 int file_set_dosmode(connection_struct *conn, struct smb_filename *smb_fname,
-		     uint32 dosmode, const char *parent_dir, bool newfile)
+		     uint32_t dosmode, const char *parent_dir, bool newfile)
 {
 	int mask=0;
 	mode_t tmp;
@@ -876,8 +842,13 @@ NTSTATUS file_set_sparse(connection_struct *conn,
 		return NT_STATUS_MEDIA_WRITE_PROTECTED;
 	}
 
-	if (!(fsp->access_mask & FILE_WRITE_DATA) &&
-			!(fsp->access_mask & FILE_WRITE_ATTRIBUTES)) {
+	/*
+	 * Windows Server 2008 & 2012 permit FSCTL_SET_SPARSE if any of the
+	 * following access flags are granted.
+	 */
+	if ((fsp->access_mask & (FILE_WRITE_DATA
+				| FILE_WRITE_ATTRIBUTES
+				| SEC_FILE_APPEND_DATA)) == 0) {
 		DEBUG(9,("file_set_sparse: fname[%s] set[%u] "
 			"access_mask[0x%08X] - access denied\n",
 			smb_fname_str_dbg(fsp->fsp_name),

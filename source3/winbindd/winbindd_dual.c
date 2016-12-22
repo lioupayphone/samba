@@ -38,12 +38,13 @@
 #include "messages.h"
 #include "../lib/util/tevent_unix.h"
 #include "lib/param/loadparm.h"
+#include "lib/util/sys_rw.h"
+#include "lib/util/sys_rw_data.h"
 
 #undef DBGC_CLASS
 #define DBGC_CLASS DBGC_WINBIND
 
 extern bool override_logfile;
-extern struct winbindd_methods cache_methods;
 
 static struct winbindd_child *winbindd_children = NULL;
 
@@ -53,7 +54,7 @@ static NTSTATUS child_read_request(int sock, struct winbindd_request *wreq)
 {
 	NTSTATUS status;
 
-	status = read_data(sock, (char *)wreq, sizeof(*wreq));
+	status = read_data_ntstatus(sock, (char *)wreq, sizeof(*wreq));
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(3, ("child_read_request: read_data failed: %s\n",
 			  nt_errstr(status)));
@@ -76,7 +77,8 @@ static NTSTATUS child_read_request(int sock, struct winbindd_request *wreq)
 	/* Ensure null termination */
 	wreq->extra_data.data[wreq->extra_len] = '\0';
 
-	status = read_data(sock, wreq->extra_data.data, wreq->extra_len);
+	status = read_data_ntstatus(sock, wreq->extra_data.data,
+				    wreq->extra_len);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0, ("Could not read extra data: %s\n",
 			  nt_errstr(status)));
@@ -818,7 +820,7 @@ void winbind_msg_onlinestatus(struct messaging_context *msg_ctx,
 	}
 
 	messaging_send_buf(msg_ctx, *sender, MSG_WINBIND_ONLINESTATUS, 
-			   (const uint8 *)message, strlen(message) + 1);
+			   (const uint8_t *)message, strlen(message) + 1);
 
 	talloc_destroy(mem_ctx);
 }
@@ -1107,7 +1109,7 @@ static void machine_password_change_handler(struct tevent_context *ctx,
 			 "password was changed and we didn't know it. "
 			 "Killing connections to domain %s\n",
 			 child->domain->name));
-		invalidate_cm_connection(&child->domain->conn);
+		invalidate_cm_connection(child->domain);
 	}
 
 	if (!calculate_next_machine_pwd_change(child->domain->name,
@@ -1252,7 +1254,7 @@ NTSTATUS winbindd_reinit_after_fork(const struct winbindd_child *myself,
 	status = reinit_after_fork(
 		winbind_messaging_context(),
 		winbind_event_context(),
-		true);
+		true, NULL);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0,("reinit_after_fork() failed\n"));
 		return status;

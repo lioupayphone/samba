@@ -64,17 +64,21 @@
 		UF_NORMAL_ACCOUNT |\
 		UF_INTERDOMAIN_TRUST_ACCOUNT |\
 		UF_WORKSTATION_TRUST_ACCOUNT |\
-		UF_SERVER_TRUST_ACCOUNT |\
-		UF_PARTIAL_SECRETS_ACCOUNT \
+		UF_SERVER_TRUST_ACCOUNT \
                 )
 
+/*
+ * MS-SAMR 2.2.1.13 UF_FLAG Codes states that some bits are ignored by
+ * clients and servers.  Other flags (like UF_LOCKOUT have special
+ * behaviours, but are not set in the traditional sense).
+ *
+ * See the samldb module for the use of this define.
+ */
+
 #define UF_SETTABLE_BITS (\
-		UF_SCRIPT |\
 		UF_ACCOUNTDISABLE |\
 		UF_HOMEDIR_REQUIRED  |\
-		UF_LOCKOUT |\
 		UF_PASSWD_NOTREQD |\
-		UF_PASSWD_CANT_CHANGE |\
 		UF_ACCOUNT_TYPE_MASK | \
 		UF_DONT_EXPIRE_PASSWD | \
 		UF_MNS_LOGON_ACCOUNT |\
@@ -83,7 +87,11 @@
 		UF_TRUSTED_FOR_DELEGATION |\
 		UF_NOT_DELEGATED |\
 		UF_USE_DES_KEY_ONLY  |\
-		UF_DONT_REQUIRE_PREAUTH \
+		UF_DONT_REQUIRE_PREAUTH |\
+	        UF_TRUSTED_TO_AUTHENTICATE_FOR_DELEGATION |\
+	        UF_NO_AUTH_DATA_REQUIRED |\
+		UF_PARTIAL_SECRETS_ACCOUNT |\
+		UF_USE_AES_KEYS \
 		)
 
 /* Group flags for "groupType" */
@@ -179,7 +187,9 @@
 					   * Level */
 #define DS_DOMAIN_FUNCTION_2003		2
 #define DS_DOMAIN_FUNCTION_2008		3
-#define DS_DOMAIN_FUNCTION_2008_R2	4 
+#define DS_DOMAIN_FUNCTION_2008_R2	4
+#define DS_DOMAIN_FUNCTION_2012 	5
+#define DS_DOMAIN_FUNCTION_2012_R2	6
 
 /* sa->systemFlags on attributes */
 #define DS_FLAG_ATTR_NOT_REPLICATED    0x00000001

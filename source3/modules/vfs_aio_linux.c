@@ -24,6 +24,7 @@
 #include "smbd/smbd.h"
 #include "smbd/globals.h"
 #include "lib/util/tevent_unix.h"
+#include "lib/util/sys_rw.h"
 #include <sys/eventfd.h>
 #include <libaio.h>
 
@@ -35,7 +36,7 @@ static unsigned num_busy;
 
 static void aio_linux_done(struct tevent_context *event_ctx,
 			   struct tevent_fd *event,
-			   uint16 flags, void *private_data);
+			   uint16_t flags, void *private_data);
 
 /************************************************************************
  Housekeeping. Cleanup if no activity for 30 seconds.
@@ -112,12 +113,12 @@ static bool init_aio_linux(struct vfs_handle_struct *handle)
 		goto fail;
 	}
 
-	if (io_queue_init(aio_pending_size, &io_ctx)) {
+	if (io_queue_init(lp_aio_max_threads(), &io_ctx)) {
 		goto fail;
 	}
 
 	DEBUG(10,("init_aio_linux: initialized with up to %d events\n",
-		  aio_pending_size));
+		  (int)lp_aio_max_threads()));
 
 	return true;
 
@@ -248,7 +249,7 @@ static struct tevent_req *aio_linux_fsync_send(
 
 static void aio_linux_done(struct tevent_context *event_ctx,
 			   struct tevent_fd *event,
-			   uint16 flags, void *private_data)
+			   uint16_t flags, void *private_data)
 {
 	uint64_t num_events = 0;
 
@@ -320,25 +321,7 @@ static int aio_linux_int_recv(struct tevent_req *req, int *err)
 	return aio_linux_recv(req, err);
 }
 
-static int aio_linux_connect(vfs_handle_struct *handle, const char *service,
-			       const char *user)
-{
-	/*********************************************************************
-	 * How many io_events to initialize ?
-	 * 128 per process seems insane as a default until you realize that
-	 * (a) Throttling is done in SMB2 via the crediting algorithm.
-	 * (b) SMB1 clients are limited to max_mux (50) outstanding
-	 *     requests and Windows clients don't use this anyway.
-	 * Essentially we want this to be unlimited unless smb.conf
-	 * says different.
-	 *********************************************************************/
-	aio_pending_size = lp_parm_int(
-		SNUM(handle->conn), "aio_linux", "aio num events", 128);
-	return SMB_VFS_NEXT_CONNECT(handle, service, user);
-}
-
 static struct vfs_fn_pointers vfs_aio_linux_fns = {
-	.connect_fn = aio_linux_connect,
 	.pread_send_fn = aio_linux_pread_send,
 	.pread_recv_fn = aio_linux_recv,
 	.pwrite_send_fn = aio_linux_pwrite_send,
@@ -347,6 +330,7 @@ static struct vfs_fn_pointers vfs_aio_linux_fns = {
 	.fsync_recv_fn = aio_linux_int_recv,
 };
 
+static_decl_vfs;
 NTSTATUS vfs_aio_linux_init(void)
 {
 	return smb_register_vfs(SMB_VFS_INTERFACE_VERSION,

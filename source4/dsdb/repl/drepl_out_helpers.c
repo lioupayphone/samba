@@ -476,8 +476,11 @@ static void dreplsrv_op_pull_source_get_changes_trigger(struct tevent_req *req)
 			DEBUG(0,(__location__ ": Failed to construct RODC partial attribute set : %s\n", nt_errstr(status)));
 			return;
 		}
+		replica_flags &= ~DRSUAPI_DRS_WRIT_REP;
 		if (state->op->extended_op == DRSUAPI_EXOP_REPL_SECRET) {
 			replica_flags &= ~DRSUAPI_DRS_SPECIAL_SECRET_PROCESSING;
+		} else {
+			replica_flags |= DRSUAPI_DRS_SPECIAL_SECRET_PROCESSING;
 		}
 	}
 	if (state->op->extended_op != DRSUAPI_EXOP_NONE) {
@@ -565,7 +568,7 @@ static void dreplsrv_op_pull_source_get_changes_done(struct tevent_req *subreq)
 	uint32_t ctr_level = 0;
 	struct drsuapi_DsGetNCChangesCtr1 *ctr1 = NULL;
 	struct drsuapi_DsGetNCChangesCtr6 *ctr6 = NULL;
-	enum drsuapi_DsExtendedError extended_ret;
+	enum drsuapi_DsExtendedError extended_ret = DRSUAPI_EXOP_ERR_NONE;
 	state->ndr_struct_ptr = NULL;
 
 	status = dcerpc_drsuapi_DsGetNCChanges_r_recv(subreq, r);
@@ -736,6 +739,9 @@ static void dreplsrv_op_pull_source_apply_changes_trigger(struct tevent_req *req
 	}
 	if (state->op->options & DRSUAPI_DRS_FULL_SYNC_IN_PROGRESS) {
 		dsdb_repl_flags |= DSDB_REPL_FLAG_PRIORITISE_INCOMING;
+	}
+	if (state->op->options & DRSUAPI_DRS_SPECIAL_SECRET_PROCESSING) {
+		dsdb_repl_flags |= DSDB_REPL_FLAG_EXPECT_NO_SECRETS;
 	}
 
 	status = dsdb_replicated_objects_convert(service->samdb,

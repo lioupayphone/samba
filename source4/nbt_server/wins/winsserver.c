@@ -422,7 +422,7 @@ static void wins_register_wack(struct nbt_name_socket *nbtsock,
 	s->io.in.addresses	= winsdb_addr_string_list(s, rec->addresses);
 	if (s->io.in.addresses == NULL) goto failed;
 
-	DLIST_ADD_END(iface->wack_queue, s, struct nbtd_wins_wack_state *);
+	DLIST_ADD_END(iface->wack_queue, s);
 
 	talloc_set_destructor(s, nbtd_wins_wack_state_destructor);
 
@@ -679,7 +679,7 @@ static void nbtd_wins_randomize1Clist(struct loadparm_context *lp_ctx,
 
 	/* 
 	 * choose a random address to be the first in the response to the client,
-	 * preferr the addresses inside the nbtd:wins_randomize1Clist_mask netmask
+	 * prefer the addresses inside the nbtd:wins_randomize1Clist_mask netmask
 	 */
 	r = random();
 	idx = sidx = r % num_addrs;

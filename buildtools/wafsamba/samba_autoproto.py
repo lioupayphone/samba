@@ -1,7 +1,8 @@
 # waf build tool for building automatic prototypes from C source
 
+import os
 import Build
-from samba_utils import *
+from samba_utils import SET_TARGET_TYPE, os_path_relpath
 
 def SAMBA_AUTOPROTO(bld, header, source):
     '''rule for samba prototype generation'''
@@ -13,7 +14,7 @@ def SAMBA_AUTOPROTO(bld, header, source):
         name = name,
         source = source,
         target = header,
-        on_results=True,
+        update_outputs=True,
         ext_out='.c',
         before ='cc',
         rule = '${PERL} "${SCRIPT}/mkproto.pl" --srcdir=.. --builddir=. --public=/dev/null --private="${TGT}" ${SRC}'

@@ -27,8 +27,8 @@ struct cli_state;
 struct file_info;
 
 enum {
-	ATTR_UNSET,
-	ATTR_SET,
+        ATTR_UNSET,
+        ATTR_SET,
 };
 
 /* The following definitions come from client/client.c  */
@@ -36,7 +36,7 @@ enum {
 const char *client_get_cur_dir(void);
 const char *client_set_cur_dir(const char *newdir);
 NTSTATUS do_list(const char *mask,
-			uint16 attribute,
+			uint16_t attribute,
 			NTSTATUS (*fn)(struct cli_state *cli_state, struct file_info *,
 				   const char *dir),
 			bool rec,

@@ -27,6 +27,7 @@
 #include "lib/tsocket/tsocket.h"
 #include "libsmb/nmblib.h"
 #include "../libcli/nbt/libnbt.h"
+#include "libads/kerberos_proto.h"
 
 /* nmbd.c sets this to True. */
 bool global_in_nmbd = False;
@@ -1085,7 +1086,7 @@ static int addr_compare(const struct sockaddr_storage *ss1,
  compare 2 ldap IPs by nearness to our interfaces - used in qsort
 *******************************************************************/
 
-int ip_service_compare(struct ip_service *ss1, struct ip_service *ss2)
+static int ip_service_compare(struct ip_service *ss1, struct ip_service *ss2)
 {
 	int result;
 
@@ -2274,59 +2275,12 @@ fail:
 }
 
 /********************************************************
- Resolve via "lmhosts" method.
-*********************************************************/
-
-static NTSTATUS resolve_lmhosts(const char *name, int name_type,
-				struct ip_service **return_iplist,
-				int *return_count)
-{
-	/*
-	 * "lmhosts" means parse the local lmhosts file.
-	 */
-	struct sockaddr_storage *ss_list;
-	NTSTATUS status = NT_STATUS_DOMAIN_CONTROLLER_NOT_FOUND;
-	TALLOC_CTX *ctx = NULL;
-
-	*return_iplist = NULL;
-	*return_count = 0;
-
-	DEBUG(3,("resolve_lmhosts: "
-		"Attempting lmhosts lookup for name %s<0x%x>\n",
-		name, name_type));
-
-	ctx = talloc_init("resolve_lmhosts");
-	if (!ctx) {
-		return NT_STATUS_NO_MEMORY;
-	}
-
-	status = resolve_lmhosts_file_as_sockaddr(get_dyn_LMHOSTSFILE(), 
-						  name, name_type, 
-						  ctx, 
-						  &ss_list, 
-						  return_count);
-	if (NT_STATUS_IS_OK(status)) {
-		if (convert_ss2service(return_iplist, 
-				       ss_list,
-				       return_count)) {
-			talloc_free(ctx);
-			return NT_STATUS_OK;
-		} else {
-			talloc_free(ctx);
-			return NT_STATUS_NO_MEMORY;
-		}
-	}
-	talloc_free(ctx);
-	return status;
-}
-
-
-/********************************************************
  Resolve via "hosts" method.
 *********************************************************/
 
 static NTSTATUS resolve_hosts(const char *name, int name_type,
-			      struct ip_service **return_iplist,
+			      TALLOC_CTX *mem_ctx,
+			      struct sockaddr_storage **return_iplist,
 			      int *return_count)
 {
 	/*
@@ -2337,7 +2291,6 @@ static NTSTATUS resolve_hosts(const char *name, int name_type,
 	struct addrinfo *res = NULL;
 	int ret = -1;
 	int i = 0;
-	const char *dns_hosts_file;
 
 	if ( name_type != 0x20 && name_type != 0x0) {
 		DEBUG(5, ("resolve_hosts: not appropriate "
@@ -2361,32 +2314,6 @@ static NTSTATUS resolve_hosts(const char *name, int name_type,
 	/* Unless we have IPv6, we really only want IPv4 addresses back. */
 	hints.ai_family = AF_INET;
 #endif
-
-	dns_hosts_file = lp_parm_const_string(-1, "resolv", "host file", NULL);
-	if (dns_hosts_file) {
-		struct sockaddr_storage *ss_list;
-		NTSTATUS status;
-		TALLOC_CTX *ctx = talloc_stackframe();
-		if (!ctx) {
-			return NT_STATUS_NO_MEMORY;
-		}
-
-		status = resolve_dns_hosts_file_as_sockaddr(dns_hosts_file, name, false,
-							    ctx, &ss_list, return_count);
-		if (NT_STATUS_IS_OK(status)) {
-			if (convert_ss2service(return_iplist,
-					       ss_list,
-					       return_count)) {
-				talloc_free(ctx);
-				return NT_STATUS_OK;
-			} else {
-				talloc_free(ctx);
-				return NT_STATUS_NO_MEMORY;
-			}
-		}
-		talloc_free(ctx);
-		return NT_STATUS_UNSUCCESSFUL;
-	}
 
 	ret = getaddrinfo(name,
 			NULL,
@@ -2414,16 +2341,15 @@ static NTSTATUS resolve_hosts(const char *name, int name_type,
 
 		*return_count += 1;
 
-		*return_iplist = SMB_REALLOC_ARRAY(*return_iplist,
-						struct ip_service,
-						*return_count);
+		*return_iplist = talloc_realloc(
+			mem_ctx, *return_iplist, struct sockaddr_storage,
+			*return_count);
 		if (!*return_iplist) {
 			DEBUG(3,("resolve_hosts: malloc fail !\n"));
 			freeaddrinfo(ailist);
 			return NT_STATUS_NO_MEMORY;
 		}
-		(*return_iplist)[i].ss = ss;
-		(*return_iplist)[i].port = PORT_NONE;
+		(*return_iplist)[i] = ss;
 		i++;
 	}
 	if (ailist) {
@@ -2454,7 +2380,6 @@ static NTSTATUS resolve_ads(const char *name,
 	struct dns_rr_srv	*dcs = NULL;
 	int			numdcs = 0;
 	int			numaddrs = 0;
-	const char *dns_hosts_file;
 
 	if ((name_type != 0x1c) && (name_type != KDC_NAME_TYPE) &&
 	    (name_type != 0x1b)) {
@@ -2467,28 +2392,32 @@ static NTSTATUS resolve_ads(const char *name,
 	}
 
 	/* The DNS code needs fixing to find IPv6 addresses... JRA. */
-
-	dns_hosts_file = lp_parm_const_string(-1, "resolv", "host file", NULL);
 	switch (name_type) {
 		case 0x1b:
 			DEBUG(5,("resolve_ads: Attempting to resolve "
 				 "PDC for %s using DNS\n", name));
-			status = ads_dns_query_pdc(ctx, dns_hosts_file,
-						   name, &dcs, &numdcs);
+			status = ads_dns_query_pdc(ctx,
+						   name,
+						   &dcs,
+						   &numdcs);
 			break;
 
 		case 0x1c:
 			DEBUG(5,("resolve_ads: Attempting to resolve "
 				 "DCs for %s using DNS\n", name));
-			status = ads_dns_query_dcs(ctx, dns_hosts_file,
-						   name, sitename, &dcs,
+			status = ads_dns_query_dcs(ctx,
+						   name,
+						   sitename,
+						   &dcs,
 						   &numdcs);
 			break;
 		case KDC_NAME_TYPE:
 			DEBUG(5,("resolve_ads: Attempting to resolve "
 				 "KDCs for %s using DNS\n", name));
-			status = ads_dns_query_kdcs(ctx, dns_hosts_file,
-						    name, sitename, &dcs,
+			status = ads_dns_query_kdcs(ctx,
+						    name,
+						    sitename,
+						    &dcs,
 						    &numdcs);
 			break;
 		default:
@@ -2499,6 +2428,13 @@ static NTSTATUS resolve_ads(const char *name,
 	if ( !NT_STATUS_IS_OK( status ) ) {
 		talloc_destroy(ctx);
 		return status;
+	}
+
+	if (numdcs == 0) {
+		*return_iplist = NULL;
+		*return_count = 0;
+		talloc_destroy(ctx);
+		return NT_STATUS_OK;
 	}
 
 	for (i=0;i<numdcs;i++) {
@@ -2598,6 +2534,38 @@ static NTSTATUS resolve_ads(const char *name,
 	return NT_STATUS_OK;
 }
 
+static const char **filter_out_nbt_lookup(TALLOC_CTX *mem_ctx,
+					  const char **resolve_order)
+{
+	size_t i, len, result_idx;
+	const char **result;
+
+	len = 0;
+	while (resolve_order[len] != NULL) {
+		len += 1;
+	}
+
+	result = talloc_array(mem_ctx, const char *, len+1);
+	if (result == NULL) {
+		return NULL;
+	}
+
+	result_idx = 0;
+
+	for (i=0; i<len; i++) {
+		const char *tok = resolve_order[i];
+
+		if (strequal(tok, "lmhosts") || strequal(tok, "wins") ||
+		    strequal(tok, "bcast")) {
+			continue;
+		}
+		result[result_idx++] = tok;
+	}
+	result[result_idx] = NULL;
+
+	return result;
+}
+
 /*******************************************************************
  Internal interface to resolve a name into an IP address.
  Use this function if the string is either an IP address, DNS
@@ -2679,16 +2647,36 @@ NTSTATUS internal_resolve_name(const char *name,
 		resolve_order = host_order;
 	}
 
+	frame = talloc_stackframe();
+
+	if ((strlen(name) > MAX_NETBIOSNAME_LEN - 1) ||
+	    (strchr(name, '.') != NULL)) {
+		/*
+		 * Don't do NBT lookup, the name would not fit anyway
+		 */
+		resolve_order = filter_out_nbt_lookup(frame, resolve_order);
+		if (resolve_order == NULL) {
+			TALLOC_FREE(frame);
+			return NT_STATUS_NO_MEMORY;
+		}
+	}
+
 	/* iterate through the name resolution backends */
 
-	frame = talloc_stackframe();
 	for (i=0; resolve_order[i]; i++) {
 		tok = resolve_order[i];
 
 		if((strequal(tok, "host") || strequal(tok, "hosts"))) {
-			status = resolve_hosts(name, name_type, return_iplist,
+			struct sockaddr_storage *ss_list;
+			status = resolve_hosts(name, name_type,
+					       talloc_tos(), &ss_list,
 					       return_count);
 			if (NT_STATUS_IS_OK(status)) {
+				if (!convert_ss2service(return_iplist,
+							ss_list,
+							return_count)) {
+					status = NT_STATUS_NO_MEMORY;
+				}
 				goto done;
 			}
 		} else if(strequal( tok, "kdc")) {
@@ -2710,13 +2698,20 @@ NTSTATUS internal_resolve_name(const char *name,
 			if (NT_STATUS_IS_OK(status)) {
 				goto done;
 			}
-		} else if(strequal( tok, "lmhosts")) {
-			status = resolve_lmhosts(name, name_type,
-						 return_iplist, return_count);
+		} else if (strequal(tok, "lmhosts")) {
+			struct sockaddr_storage *ss_list;
+			status = resolve_lmhosts_file_as_sockaddr(
+				get_dyn_LMHOSTSFILE(), name, name_type,
+				talloc_tos(), &ss_list, return_count);
 			if (NT_STATUS_IS_OK(status)) {
+				if (!convert_ss2service(return_iplist,
+							ss_list,
+							return_count)) {
+					status = NT_STATUS_NO_MEMORY;
+				}
 				goto done;
 			}
-		} else if(strequal( tok, "wins")) {
+		} else if (strequal(tok, "wins")) {
 			/* don't resolve 1D via WINS */
 			struct sockaddr_storage *ss_list;
 			if (name_type != 0x1D) {
@@ -2733,7 +2728,7 @@ NTSTATUS internal_resolve_name(const char *name,
 					goto done;
 				}
 			}
-		} else if(strequal( tok, "bcast")) {
+		} else if (strequal(tok, "bcast")) {
 			struct sockaddr_storage *ss_list;
 			status = name_resolve_bcast(
 				name, name_type, talloc_tos(),
@@ -3055,6 +3050,7 @@ static NTSTATUS get_dc_list(const char *domain,
 	int auto_count = 0;
 	NTSTATUS status;
 	TALLOC_CTX *ctx = talloc_init("get_dc_list");
+	int auto_name_type = 0x1C;
 
 	*ip_list = NULL;
 	*count = 0;
@@ -3095,10 +3091,7 @@ static NTSTATUS get_dc_list(const char *domain,
 		   are already sorted by priority and weight */
 		*ordered = true;
 		resolve_order = kdc_order;
-	}
-	if (!resolve_order) {
-		status = NT_STATUS_NO_MEMORY;
-		goto out;
+		auto_name_type = KDC_NAME_TYPE;
 	}
 
 	/* fetch the server we have affinity for.  Add the
@@ -3121,15 +3114,6 @@ static NTSTATUS get_dc_list(const char *domain,
 		goto out;
 	}
 
-	/* if we are starting from scratch, just lookup DOMAIN<0x1c> */
-
-	if (!*pserver ) {
-		DEBUG(10,("get_dc_list: no preferred domain controllers.\n"));
-		status = internal_resolve_name(domain, 0x1C, sitename, ip_list,
-					     count, resolve_order);
-		goto out;
-	}
-
 	DEBUG(3,("get_dc_list: preferred server list: \"%s\"\n", pserver ));
 
 	/*
@@ -3142,7 +3126,8 @@ static NTSTATUS get_dc_list(const char *domain,
 	p = pserver;
 	while (next_token_talloc(ctx, &p, &name, LIST_SEP)) {
 		if (!done_auto_lookup && strequal(name, "*")) {
-			status = internal_resolve_name(domain, 0x1C, sitename,
+			status = internal_resolve_name(domain, auto_name_type,
+						       sitename,
 						       &auto_ip_list,
 						       &auto_count,
 						       resolve_order);
@@ -3166,7 +3151,8 @@ static NTSTATUS get_dc_list(const char *domain,
 			status = NT_STATUS_NO_LOGON_SERVERS;
 			goto out;
 		}
-		status = internal_resolve_name(domain, 0x1C, sitename, ip_list,
+		status = internal_resolve_name(domain, auto_name_type,
+					       sitename, ip_list,
 					     count, resolve_order);
 		goto out;
 	}
@@ -3218,13 +3204,19 @@ static NTSTATUS get_dc_list(const char *domain,
 		/* added support for address:port syntax for ads
 		 * (not that I think anyone will ever run the LDAP
 		 * server in an AD domain on something other than
-		 * port 389 */
+		 * port 389
+		 * However, the port should not be used for kerberos
+		 */
 
-		port = (lp_security() == SEC_ADS) ? LDAP_PORT : PORT_NONE;
+		port = (lookup_type == DC_ADS_ONLY) ? LDAP_PORT :
+			((lookup_type == DC_KDC_ONLY) ? DEFAULT_KRB5_PORT :
+			 PORT_NONE);
 		if ((port_str=strchr(name, ':')) != NULL) {
 			*port_str = '\0';
-			port_str++;
-			port = atoi(port_str);
+			if (lookup_type != DC_KDC_ONLY) {
+				port_str++;
+				port = atoi(port_str);
+			}
 		}
 
 		/* explicit lookup; resolve_name() will

@@ -290,6 +290,57 @@ SMBC_read_ctx(SMBCCTX *context,
 	return ret;  /* Success, ret bytes of data ... */
 }
 
+off_t
+SMBC_splice_ctx(SMBCCTX *context,
+                SMBCFILE *srcfile,
+                SMBCFILE *dstfile,
+                off_t count,
+                int (*splice_cb)(off_t n, void *priv),
+                void *priv)
+{
+	off_t written;
+	TALLOC_CTX *frame = talloc_stackframe();
+	NTSTATUS status;
+
+	if (!context || !context->internal->initialized) {
+		errno = EINVAL;
+		TALLOC_FREE(frame);
+		return -1;
+	}
+
+	if (!srcfile ||
+	    !SMBC_dlist_contains(context->internal->files, srcfile))
+	{
+		errno = EBADF;
+		TALLOC_FREE(frame);
+		return -1;
+	}
+
+	if (!dstfile ||
+	    !SMBC_dlist_contains(context->internal->files, dstfile))
+	{
+		errno = EBADF;
+		TALLOC_FREE(frame);
+		return -1;
+	}
+
+	status = cli_splice(srcfile->targetcli, dstfile->targetcli,
+			    srcfile->cli_fd, dstfile->cli_fd,
+			    count, srcfile->offset, dstfile->offset, &written,
+			    splice_cb, priv);
+	if (!NT_STATUS_IS_OK(status)) {
+		errno = SMBC_errno(context, srcfile->targetcli);
+		TALLOC_FREE(frame);
+		return -1;
+	}
+
+	srcfile->offset += written;
+	dstfile->offset += written;
+
+	TALLOC_FREE(frame);
+	return written;
+}
+
 /*
  * Routine to write() a file ...
  */

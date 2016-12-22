@@ -27,6 +27,7 @@
 #include <talloc.h>
 #include <tevent.h>
 #include "lib/async_req/async_sock.h"
+#include "lib/util/iov_buf.h"
 
 /* Note: lib/util/ is currently GPL */
 #include "lib/util/tevent_unix.h"
@@ -73,6 +74,7 @@ struct tevent_req *async_connect_send(
 {
 	struct tevent_req *req;
 	struct async_connect_state *state;
+	int ret;
 
 	req = tevent_req_create(mem_ctx, &state, struct async_connect_state);
 	if (req == NULL) {
@@ -104,7 +106,11 @@ struct tevent_req *async_connect_send(
 	}
 	memcpy(&state->address, address, address_len);
 
-	set_blocking(fd, false);
+	ret = set_blocking(fd, false);
+	if (ret == -1) {
+		tevent_req_error(req, errno);
+		return tevent_req_post(req, ev);
+	}
 
 	if (state->before_connect != NULL) {
 		state->before_connect(state->private_data);
@@ -122,11 +128,21 @@ struct tevent_req *async_connect_send(
 	}
 
 	/*
-	 * The only errno indicating that the connect is still in
-	 * flight is EINPROGRESS, everything else is an error
+	 * The only errno indicating that an initial connect is still
+	 * in flight is EINPROGRESS.
+	 *
+	 * We get EALREADY when someone calls us a second time for a
+	 * given fd and the connect is still in flight (and returned
+	 * EINPROGRESS the first time).
+	 *
+	 * This allows callers like open_socket_out_send() to reuse
+	 * fds and call us with an fd for which the connect is still
+	 * in flight. The proper thing to do for callers would be
+	 * closing the fd and starting from scratch with a fresh
+	 * socket.
 	 */
 
-	if (errno != EINPROGRESS) {
+	if (errno != EINPROGRESS && errno != EALREADY) {
 		tevent_req_error(req, errno);
 		return tevent_req_post(req, ev);
 	}
@@ -148,7 +164,13 @@ static void async_connect_cleanup(struct tevent_req *req,
 
 	TALLOC_FREE(state->fde);
 	if (state->fd != -1) {
-		fcntl(state->fd, F_SETFL, state->old_sockflags);
+		int ret;
+
+		ret = fcntl(state->fd, F_SETFL, state->old_sockflags);
+		if (ret == -1) {
+			abort();
+		}
+
 		state->fd = -1;
 	}
 }
@@ -264,7 +286,7 @@ struct tevent_req *writev_send(TALLOC_CTX *mem_ctx, struct tevent_context *ev,
 	}
 
 	if (!tevent_queue_add(queue, ev, req, writev_trigger, NULL)) {
-		tevent_req_nomem(NULL, req);
+		tevent_req_oom(req);
 		return tevent_req_post(req, ev);
 	}
 	return req;
@@ -296,10 +318,8 @@ static void writev_handler(struct tevent_context *ev, struct tevent_fd *fde,
 		private_data, struct tevent_req);
 	struct writev_state *state =
 		tevent_req_data(req, struct writev_state);
-	size_t to_write, written;
-	int i;
-
-	to_write = 0;
+	size_t written;
+	bool ok;
 
 	if ((state->flags & TEVENT_FD_READ) && (flags & TEVENT_FD_READ)) {
 		int ret, value;
@@ -333,10 +353,6 @@ static void writev_handler(struct tevent_context *ev, struct tevent_fd *fde,
 		}
 	}
 
-	for (i=0; i<state->count; i++) {
-		to_write += state->iov[i].iov_len;
-	}
-
 	written = writev(state->fd, state->iov, state->count);
 	if ((written == -1) && (errno == EINTR)) {
 		/* retry */
@@ -352,26 +368,15 @@ static void writev_handler(struct tevent_context *ev, struct tevent_fd *fde,
 	}
 	state->total_size += written;
 
-	if (written == to_write) {
-		tevent_req_done(req);
+	ok = iov_advance(&state->iov, &state->count, written);
+	if (!ok) {
+		tevent_req_error(req, EIO);
 		return;
 	}
 
-	/*
-	 * We've written less than we were asked to, drop stuff from
-	 * state->iov.
-	 */
-
-	while (written > 0) {
-		if (written < state->iov[0].iov_len) {
-			state->iov[0].iov_base =
-				(char *)state->iov[0].iov_base + written;
-			state->iov[0].iov_len -= written;
-			break;
-		}
-		written -= state->iov[0].iov_len;
-		state->iov += 1;
-		state->count -= 1;
+	if (state->count == 0) {
+		tevent_req_done(req);
+		return;
 	}
 }
 
@@ -537,6 +542,8 @@ ssize_t read_packet_recv(struct tevent_req *req, TALLOC_CTX *mem_ctx,
 
 struct wait_for_read_state {
 	struct tevent_fd *fde;
+	int fd;
+	bool check_errors;
 };
 
 static void wait_for_read_cleanup(struct tevent_req *req,
@@ -547,8 +554,8 @@ static void wait_for_read_done(struct tevent_context *ev,
 			       void *private_data);
 
 struct tevent_req *wait_for_read_send(TALLOC_CTX *mem_ctx,
-				      struct tevent_context *ev,
-				      int fd)
+				      struct tevent_context *ev, int fd,
+				      bool check_errors)
 {
 	struct tevent_req *req;
 	struct wait_for_read_state *state;
@@ -565,6 +572,9 @@ struct tevent_req *wait_for_read_send(TALLOC_CTX *mem_ctx,
 	if (tevent_req_nomem(state->fde, req)) {
 		return tevent_req_post(req, ev);
 	}
+
+	state->fd = fd;
+	state->check_errors = check_errors;
 	return req;
 }
 
@@ -584,10 +594,44 @@ static void wait_for_read_done(struct tevent_context *ev,
 {
 	struct tevent_req *req = talloc_get_type_abort(
 		private_data, struct tevent_req);
+	struct wait_for_read_state *state =
+	    tevent_req_data(req, struct wait_for_read_state);
+	ssize_t nread;
+	char c;
 
-	if (flags & TEVENT_FD_READ) {
-		tevent_req_done(req);
+	if ((flags & TEVENT_FD_READ) == 0) {
+		return;
 	}
+
+	if (!state->check_errors) {
+		tevent_req_done(req);
+		return;
+	}
+
+	nread = recv(state->fd, &c, 1, MSG_PEEK);
+
+	if (nread == 0) {
+		tevent_req_error(req, EPIPE);
+		return;
+	}
+
+	if ((nread == -1) && (errno == EINTR)) {
+		/* come back later */
+		return;
+	}
+
+	if ((nread == -1) && (errno == ENOTSOCK)) {
+		/* Ignore this specific error on pipes */
+		tevent_req_done(req);
+		return;
+	}
+
+	if (nread == -1) {
+		tevent_req_error(req, errno);
+		return;
+	}
+
+	tevent_req_done(req);
 }
 
 bool wait_for_read_recv(struct tevent_req *req, int *perr)

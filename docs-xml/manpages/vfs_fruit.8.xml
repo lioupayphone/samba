@@ -7,7 +7,7 @@
 	<manvolnum>8</manvolnum>
 	<refmiscinfo class="source">Samba</refmiscinfo>
 	<refmiscinfo class="manual">System Administration tools</refmiscinfo>
-	<refmiscinfo class="version">4.2</refmiscinfo>
+	<refmiscinfo class="version">4.4</refmiscinfo>
 </refmeta>
 
 
@@ -223,6 +223,17 @@
 	      <para>WARNING: the copyfile request is blocking the
 	      client while the server does the copy.</para>.
 	      <para>The default is <emphasis>no</emphasis>.</para>
+	    </listitem>
+	  </varlistentry>
+
+	  <varlistentry>
+	    <term>fruit:posix_rename = yes | no</term>
+	    <listitem>
+	      <para>Whether to enable POSIX directory rename behaviour
+	      for OS X clients. Without this, directories can't be
+	      renamed if any client has any file inside it
+	      (recursive!) open.</para>
+	      <para>The default is <emphasis>yes</emphasis>.</para>
 	    </listitem>
 	  </varlistentry>
 

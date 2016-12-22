@@ -186,7 +186,7 @@ static size_t interpret_long_filename(TALLOC_CTX *ctx,
 			namelen = IVAL(p,0);
 			p += 4;
 			p += 4; /* EA size */
-			slen = SVAL(p, 0);
+			slen = CVAL(p, 0);
 			if (slen > 24) {
 				/* Bad short name length. */
 				return pdata_end - base;
@@ -505,8 +505,7 @@ NTSTATUS cli_list_old(struct cli_state *cli, const char *mask,
 	if (req == NULL) {
 		goto fail;
 	}
-	if (!tevent_req_poll(req, ev)) {
-		status = map_nt_error_from_unix(errno);
+	if (!tevent_req_poll_ntstatus(req, ev, &status)) {
 		goto fail;
 	}
 	status = cli_list_old_recv(req, frame, &finfo);
@@ -966,8 +965,7 @@ NTSTATUS cli_list(struct cli_state *cli, const char *mask, uint16_t attribute,
 	if (req == NULL) {
 		goto fail;
 	}
-	if (!tevent_req_poll(req, ev)) {
-		status = map_nt_error_from_unix(errno);
+	if (!tevent_req_poll_ntstatus(req, ev, &status)) {
 		goto fail;
 	}
 

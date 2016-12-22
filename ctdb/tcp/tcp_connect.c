@@ -18,11 +18,22 @@
    along with this program; if not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "includes.h"
-#include "tdb.h"
+#include "replace.h"
 #include "system/network.h"
 #include "system/filesys.h"
-#include "../include/ctdb_private.h"
+
+#include <talloc.h>
+#include <tevent.h>
+
+#include "lib/util/debug.h"
+#include "lib/util/time.h"
+
+#include "ctdb_private.h"
+
+#include "common/system.h"
+#include "common/common.h"
+#include "common/logging.h"
+
 #include "ctdb_tcp.h"
 
 /*
@@ -60,15 +71,16 @@ void ctdb_tcp_tnode_cb(uint8_t *data, size_t cnt, void *private_data)
 	}
 
 	ctdb_tcp_stop_connection(node);
-	tnode->connect_te = event_add_timed(node->ctdb->ev, tnode,
-					    timeval_current_ofs(3, 0),
-					    ctdb_tcp_node_connect, node);
+	tnode->connect_te = tevent_add_timer(node->ctdb->ev, tnode,
+					     timeval_current_ofs(3, 0),
+					     ctdb_tcp_node_connect, node);
 }
 
 /*
   called when socket becomes writeable on connect
 */
-static void ctdb_node_connect_write(struct event_context *ev, struct fd_event *fde, 
+static void ctdb_node_connect_write(struct tevent_context *ev,
+				    struct tevent_fd *fde,
 				    uint16_t flags, void *private_data)
 {
 	struct ctdb_node *node = talloc_get_type(private_data,
@@ -86,7 +98,7 @@ static void ctdb_node_connect_write(struct event_context *ev, struct fd_event *f
 	if (getsockopt(tnode->fd, SOL_SOCKET, SO_ERROR, &error, &len) != 0 ||
 	    error != 0) {
 		ctdb_tcp_stop_connection(node);
-		tnode->connect_te = event_add_timed(ctdb->ev, tnode, 
+		tnode->connect_te = tevent_add_timer(ctdb->ev, tnode,
 						    timeval_current_ofs(1, 0),
 						    ctdb_tcp_node_connect, node);
 		return;
@@ -111,20 +123,10 @@ static void ctdb_node_connect_write(struct event_context *ev, struct fd_event *f
 }
 
 
-static int ctdb_tcp_get_address(struct ctdb_context *ctdb,
-				const char *address, ctdb_sock_addr *addr)
-{
-	if (parse_ip(address, NULL, 0, addr) == 0) {
-		DEBUG(DEBUG_CRIT, (__location__ " Unparsable address : %s.\n", address));
-		return -1;
-	}
-	return 0;
-}
-
 /*
   called when we should try and establish a tcp connection to a node
 */
-void ctdb_tcp_node_connect(struct event_context *ev, struct timed_event *te, 
+void ctdb_tcp_node_connect(struct tevent_context *ev, struct tevent_timer *te,
 			   struct timeval t, void *private_data)
 {
 	struct ctdb_node *node = talloc_get_type(private_data,
@@ -139,25 +141,7 @@ void ctdb_tcp_node_connect(struct event_context *ev, struct timed_event *te,
 
 	ctdb_tcp_stop_connection(node);
 
-	ZERO_STRUCT(sock_out);
-#ifdef HAVE_SOCK_SIN_LEN
-	sock_out.ip.sin_len = sizeof(sock_out);
-#endif
-	if (ctdb_tcp_get_address(ctdb, node->address.address, &sock_out) != 0) {
-		return;
-	}
-	switch (sock_out.sa.sa_family) {
-	case AF_INET:
-		sock_out.ip.sin_port = htons(node->address.port);
-		break;
-	case AF_INET6:
-		sock_out.ip6.sin6_port = htons(node->address.port);
-		break;
-	default:
-		DEBUG(DEBUG_ERR, (__location__ " unknown family %u\n",
-			sock_out.sa.sa_family));
-		return;
-	}
+	sock_out = node->address;
 
 	tnode->fd = socket(sock_out.sa.sa_family, SOCK_STREAM, IPPROTO_TCP);
 	if (tnode->fd == -1) {
@@ -175,12 +159,7 @@ void ctdb_tcp_node_connect(struct event_context *ev, struct timed_event *te,
 	 * the remote side is actually routable in case CTDB traffic will run on
 	 * a dedicated non-routeable network.
 	 */
-	ZERO_STRUCT(sock_in);
-	if (ctdb_tcp_get_address(ctdb, ctdb->address.address, &sock_in) != 0) {
-		DEBUG(DEBUG_ERR, (__location__ " Failed to find our address. Failing bind.\n"));
-		close(tnode->fd);
-		return;
-	}
+	sock_in = *ctdb->address;
 
 	/* AIX libs check to see if the socket address and length
 	   arguments are consistent with each other on calls like
@@ -189,10 +168,12 @@ void ctdb_tcp_node_connect(struct event_context *ev, struct timed_event *te,
 	*/
 	switch (sock_in.sa.sa_family) {
 	case AF_INET:
+		sock_in.ip.sin_port = 0 /* Any port */;
 		sockin_size = sizeof(sock_in.ip);
 		sockout_size = sizeof(sock_out.ip);
 		break;
 	case AF_INET6:
+		sock_in.ip6.sin6_port = 0 /* Any port */;
 		sockin_size = sizeof(sock_in.ip6);
 		sockout_size = sizeof(sock_out.ip6);
 		break;
@@ -202,10 +183,7 @@ void ctdb_tcp_node_connect(struct event_context *ev, struct timed_event *te,
 		close(tnode->fd);
 		return;
 	}
-#ifdef HAVE_SOCK_SIN_LEN
-	sock_in.ip.sin_len = sockin_size;
-	sock_out.ip.sin_len = sockout_size;
-#endif
+
 	if (bind(tnode->fd, (struct sockaddr *)&sock_in, sockin_size) == -1) {
 		DEBUG(DEBUG_ERR, (__location__ "Failed to bind socket %s(%d)\n",
 				  strerror(errno), errno));
@@ -216,22 +194,23 @@ void ctdb_tcp_node_connect(struct event_context *ev, struct timed_event *te,
 	if (connect(tnode->fd, (struct sockaddr *)&sock_out, sockout_size) != 0 &&
 	    errno != EINPROGRESS) {
 		ctdb_tcp_stop_connection(node);
-		tnode->connect_te = event_add_timed(ctdb->ev, tnode, 
-						    timeval_current_ofs(1, 0),
-						    ctdb_tcp_node_connect, node);
+		tnode->connect_te = tevent_add_timer(ctdb->ev, tnode,
+						     timeval_current_ofs(1, 0),
+						     ctdb_tcp_node_connect, node);
 		return;
 	}
 
 	/* non-blocking connect - wait for write event */
-	tnode->connect_fde = event_add_fd(node->ctdb->ev, tnode, tnode->fd, 
-					  EVENT_FD_WRITE|EVENT_FD_READ, 
-					  ctdb_node_connect_write, node);
+	tnode->connect_fde = tevent_add_fd(node->ctdb->ev, tnode, tnode->fd,
+					   TEVENT_FD_WRITE|TEVENT_FD_READ,
+					   ctdb_node_connect_write, node);
 
 	/* don't give it long to connect - retry in one second. This ensures
 	   that we find a node is up quickly (tcp normally backs off a syn reply
 	   delay by quite a lot) */
-	tnode->connect_te = event_add_timed(ctdb->ev, tnode, timeval_current_ofs(1, 0), 
-					    ctdb_tcp_node_connect, node);
+	tnode->connect_te = tevent_add_timer(ctdb->ev, tnode,
+					     timeval_current_ofs(1, 0),
+					     ctdb_tcp_node_connect, node);
 }
 
 /*
@@ -239,7 +218,7 @@ void ctdb_tcp_node_connect(struct event_context *ev, struct timed_event *te,
   currently makes no attempt to check if the connection is really from a ctdb
   node in our cluster
 */
-static void ctdb_listen_event(struct event_context *ev, struct fd_event *fde, 
+static void ctdb_listen_event(struct tevent_context *ev, struct tevent_fd *fde,
 			      uint16_t flags, void *private_data)
 {
 	struct ctdb_context *ctdb = talloc_get_type(private_data, struct ctdb_context);
@@ -249,18 +228,16 @@ static void ctdb_listen_event(struct event_context *ev, struct fd_event *fde,
 	int fd, nodeid;
 	struct ctdb_incoming *in;
 	int one = 1;
-	const char *incoming_node;
 
 	memset(&addr, 0, sizeof(addr));
 	len = sizeof(addr);
 	fd = accept(ctcp->listen_fd, (struct sockaddr *)&addr, &len);
 	if (fd == -1) return;
 
-	incoming_node = ctdb_addr_to_str(&addr);
-	nodeid = ctdb_ip_to_nodeid(ctdb, incoming_node);
+	nodeid = ctdb_ip_to_nodeid(ctdb, &addr);
 
 	if (nodeid == -1) {
-		DEBUG(DEBUG_ERR, ("Refused connection from unknown node %s\n", incoming_node));
+		DEBUG(DEBUG_ERR, ("Refused connection from unknown node %s\n", ctdb_addr_to_str(&addr)));
 		close(fd);
 		return;
 	}
@@ -279,8 +256,8 @@ static void ctdb_listen_event(struct event_context *ev, struct fd_event *fde,
 				      strerror(errno)));
 	}
 
-	in->queue = ctdb_queue_setup(ctdb, in, in->fd, CTDB_TCP_ALIGNMENT, 
-				     ctdb_tcp_read_cb, in, "ctdbd-%s", incoming_node);
+	in->queue = ctdb_queue_setup(ctdb, in, in->fd, CTDB_TCP_ALIGNMENT,
+				     ctdb_tcp_read_cb, in, "ctdbd-%s", ctdb_addr_to_str(&addr));
 }
 
 
@@ -334,20 +311,13 @@ static int ctdb_tcp_listen_automatic(struct ctdb_context *ctdb)
 		if (ctdb->nodes[i]->flags & NODE_FLAGS_DELETED) {
 			continue;
 		}
-		ZERO_STRUCT(sock);
-		if (ctdb_tcp_get_address(ctdb,
-				ctdb->nodes[i]->address.address, 
-				&sock) != 0) {
-			continue;
-		}
-	
+		sock = ctdb->nodes[i]->address;
+
 		switch (sock.sa.sa_family) {
 		case AF_INET:
-			sock.ip.sin_port = htons(ctdb->nodes[i]->address.port);
 			sock_size = sizeof(sock.ip);
 			break;
 		case AF_INET6:
-			sock.ip6.sin6_port = htons(ctdb->nodes[i]->address.port);
 			sock_size = sizeof(sock.ip6);
 			break;
 		default:
@@ -355,9 +325,6 @@ static int ctdb_tcp_listen_automatic(struct ctdb_context *ctdb)
 				sock.sa.sa_family));
 			continue;
 		}
-#ifdef HAVE_SOCK_SIN_LEN
-		sock.ip.sin_len = sock_size;
-#endif
 
 		ctcp->listen_fd = socket(sock.sa.sa_family, SOCK_STREAM, IPPROTO_TCP);
 		if (ctcp->listen_fd == -1) {
@@ -384,45 +351,46 @@ static int ctdb_tcp_listen_automatic(struct ctdb_context *ctdb)
 			DEBUG(DEBUG_ERR,(__location__ " Failed to bind() to socket. %s(%d)\n",
 					strerror(errno), errno));
 		}
+
+		close(ctcp->listen_fd);
+		ctcp->listen_fd = -1;
 	}
 
 	if (i == ctdb->num_nodes) {
 		DEBUG(DEBUG_CRIT,("Unable to bind to any of the node addresses - giving up\n"));
 		goto failed;
 	}
-	ctdb->address.address = talloc_strdup(ctdb, ctdb->nodes[i]->address.address);
-	if (ctdb->address.address == NULL) {
+	ctdb->address = talloc_memdup(ctdb,
+				      &ctdb->nodes[i]->address,
+				      sizeof(ctdb_sock_addr));
+	if (ctdb->address == NULL) {
 		ctdb_set_error(ctdb, "Out of memory at %s:%d",
 			       __FILE__, __LINE__);
 		goto failed;
 	}
-	ctdb->address.port    = ctdb->nodes[i]->address.port;
+
 	ctdb->name = talloc_asprintf(ctdb, "%s:%u",
-				     ctdb->address.address,
-				     ctdb->address.port);
+				     ctdb_addr_to_str(ctdb->address),
+				     ctdb_addr_to_port(ctdb->address));
 	if (ctdb->name == NULL) {
 		ctdb_set_error(ctdb, "Out of memory at %s:%d",
 			       __FILE__, __LINE__);
 		goto failed;
 	}
-	ctdb->pnn = ctdb->nodes[i]->pnn;
-	DEBUG(DEBUG_INFO,("ctdb chose network address %s:%u pnn %u\n",
-		 ctdb->address.address,
-		 ctdb->address.port,
-		 ctdb->pnn));
+	DEBUG(DEBUG_INFO,("ctdb chose network address %s\n", ctdb->name));
 
 	if (listen(ctcp->listen_fd, 10) == -1) {
 		goto failed;
 	}
 
-	fde = event_add_fd(ctdb->ev, ctcp, ctcp->listen_fd, EVENT_FD_READ,
-			   ctdb_listen_event, ctdb);
+	fde = tevent_add_fd(ctdb->ev, ctcp, ctcp->listen_fd, TEVENT_FD_READ,
+			    ctdb_listen_event, ctdb);
 	tevent_fd_set_auto_close(fde);
 
 	close(lock_fd);
 
 	return 0;
-	
+
 failed:
 	close(lock_fd);
 	if (ctcp->listen_fd != -1) {
@@ -447,23 +415,17 @@ int ctdb_tcp_listen(struct ctdb_context *ctdb)
 
 	/* we can either auto-bind to the first available address, or we can
 	   use a specified address */
-	if (!ctdb->address.address) {
+	if (!ctdb->address) {
 		return ctdb_tcp_listen_automatic(ctdb);
 	}
 
-	ZERO_STRUCT(sock);
-	if (ctdb_tcp_get_address(ctdb, ctdb->address.address, 
-				 &sock) != 0) {
-		goto failed;
-	}
-	
+	sock = *ctdb->address;
+
 	switch (sock.sa.sa_family) {
 	case AF_INET:
-		sock.ip.sin_port = htons(ctdb->address.port);
 		sock_size = sizeof(sock.ip);
 		break;
 	case AF_INET6:
-		sock.ip6.sin6_port = htons(ctdb->address.port);
 		sock_size = sizeof(sock.ip6);
 		break;
 	default:
@@ -471,9 +433,6 @@ int ctdb_tcp_listen(struct ctdb_context *ctdb)
 			sock.sa.sa_family));
 		goto failed;
 	}
-#ifdef HAVE_SOCK_SIN_LEN
-	sock.ip.sin_len = sock_size;
-#endif
 
 	ctcp->listen_fd = socket(sock.sa.sa_family, SOCK_STREAM, IPPROTO_TCP);
 	if (ctcp->listen_fd == -1) {
@@ -497,8 +456,8 @@ int ctdb_tcp_listen(struct ctdb_context *ctdb)
 		goto failed;
 	}
 
-	fde = event_add_fd(ctdb->ev, ctcp, ctcp->listen_fd, EVENT_FD_READ,
-		     ctdb_listen_event, ctdb);	
+	fde = tevent_add_fd(ctdb->ev, ctcp, ctcp->listen_fd, TEVENT_FD_READ,
+			    ctdb_listen_event, ctdb);
 	tevent_fd_set_auto_close(fde);
 
 	return 0;

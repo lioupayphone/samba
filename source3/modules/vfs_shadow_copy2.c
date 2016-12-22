@@ -33,7 +33,6 @@
 #include "smbd/smbd.h"
 #include "system/filesys.h"
 #include "include/ntioctl.h"
-#include <ccan/hash/hash.h>
 #include "util_tdb.h"
 
 struct shadow_copy2_config {
@@ -46,9 +45,8 @@ struct shadow_copy2_config {
 	bool fixinodes;
 	char *sort_order;
 	bool snapdir_absolute;
-	char *basedir;
 	char *mount_point;
-	char *rel_connectpath; /* share root, relative to the basedir */
+	char *rel_connectpath; /* share root, relative to a snapshot root */
 	char *snapshot_basepath; /* the absolute version of snapdir */
 };
 
@@ -435,10 +433,13 @@ static char *shadow_copy2_find_mount_point(TALLOC_CTX *mem_ctx,
  * Convert from a name as handed in via the SMB layer
  * and a timestamp into the local path of the snapshot
  * of the provided file at the provided time.
+ * Also return the path in the snapshot corresponding
+ * to the file's share root.
  */
-static char *shadow_copy2_convert(TALLOC_CTX *mem_ctx,
-				  struct vfs_handle_struct *handle,
-				  const char *name, time_t timestamp)
+static char *shadow_copy2_do_convert(TALLOC_CTX *mem_ctx,
+				     struct vfs_handle_struct *handle,
+				     const char *name, time_t timestamp,
+				     size_t *snaproot_len)
 {
 	struct smb_filename converted_fname;
 	char *result = NULL;
@@ -448,10 +449,11 @@ static char *shadow_copy2_convert(TALLOC_CTX *mem_ctx,
 	size_t pathlen;
 	char *insert = NULL;
 	char *converted = NULL;
-	size_t insertlen;
+	size_t insertlen, connectlen = 0;
 	int i, saved_errno;
 	size_t min_offset;
 	struct shadow_copy2_config *config;
+	size_t in_share_offset = 0;
 
 	SMB_VFS_HANDLE_GET_DATA(handle, config, struct shadow_copy2_config,
 				return NULL);
@@ -493,6 +495,13 @@ static char *shadow_copy2_convert(TALLOC_CTX *mem_ctx,
 			DEBUG(10, ("Found %s\n", converted));
 			result = converted;
 			converted = NULL;
+			if (snaproot_len != NULL) {
+				*snaproot_len = strlen(snapshot_path);
+				if (config->rel_connectpath != NULL) {
+					*snaproot_len +=
+					    strlen(config->rel_connectpath) + 1;
+				}
+			}
 			goto fail;
 		} else {
 			errno = ENOENT;
@@ -501,6 +510,7 @@ static char *shadow_copy2_convert(TALLOC_CTX *mem_ctx,
 		/* never reached ... */
 	}
 
+	connectlen = strlen(handle->conn->connectpath);
 	if (name[0] == 0) {
 		path = talloc_strdup(mem_ctx, handle->conn->connectpath);
 	} else {
@@ -576,6 +586,10 @@ static char *shadow_copy2_convert(TALLOC_CTX *mem_ctx,
 			goto fail;
 		}
 
+		if (offset >= connectlen) {
+			in_share_offset = offset;
+		}
+
 		memcpy(converted+offset, insert, insertlen);
 
 		offset += insertlen;
@@ -589,6 +603,9 @@ static char *shadow_copy2_convert(TALLOC_CTX *mem_ctx,
 			   ret, ret == 0 ? "ok" : strerror(errno)));
 		if (ret == 0) {
 			/* success */
+			if (snaproot_len != NULL) {
+				*snaproot_len = in_share_offset + insertlen;
+			}
 			break;
 		}
 		if (errno == ENOTDIR) {
@@ -625,6 +642,18 @@ fail:
 	return result;
 }
 
+/**
+ * Convert from a name as handed in via the SMB layer
+ * and a timestamp into the local path of the snapshot
+ * of the provided file at the provided time.
+ */
+static char *shadow_copy2_convert(TALLOC_CTX *mem_ctx,
+				  struct vfs_handle_struct *handle,
+				  const char *name, time_t timestamp)
+{
+	return shadow_copy2_do_convert(mem_ctx, handle, name, timestamp, NULL);
+}
+
 /*
   modify a sbuf return to ensure that inodes in the shadow directory
   are different from those in the main directory
@@ -648,9 +677,11 @@ static void convert_sbuf(vfs_handle_struct *handle, const char *fname,
 		   number collision, but I can't see a better approach
 		   without significant VFS changes
 		*/
+		TDB_DATA key = { .dptr = discard_const_p(uint8_t, fname),
+				 .dsize = strlen(fname) };
 		uint32_t shash;
 
-		shash = hash(fname, strlen(fname), 0) & 0xFF000000;
+		shash = tdb_jenkins_hash(&key) & 0xFF000000;
 		if (shash == 0) {
 			shash = 1;
 		}
@@ -661,7 +692,7 @@ static void convert_sbuf(vfs_handle_struct *handle, const char *fname,
 static DIR *shadow_copy2_opendir(vfs_handle_struct *handle,
 					    const char *fname,
 					    const char *mask,
-					    uint32 attr)
+					    uint32_t attr)
 {
 	time_t timestamp;
 	char *stripped;
@@ -1102,8 +1133,6 @@ static char *shadow_copy2_realpath(vfs_handle_struct *handle,
 	char *stripped = NULL;
 	char *tmp = NULL;
 	char *result = NULL;
-	char *inserted = NULL;
-	char *inserted_to, *inserted_end;
 	int saved_errno;
 
 	if (!shadow_copy2_strip_snapshot(talloc_tos(), handle, fname,
@@ -1120,29 +1149,9 @@ static char *shadow_copy2_realpath(vfs_handle_struct *handle,
 	}
 
 	result = SMB_VFS_NEXT_REALPATH(handle, tmp);
-	if (result == NULL) {
-		goto done;
-	}
-
-	/*
-	 * Take away what we've inserted. This removes the @GMT-thingy
-	 * completely, but will give a path under the share root.
-	 */
-	inserted = shadow_copy2_insert_string(talloc_tos(), handle, timestamp);
-	if (inserted == NULL) {
-		goto done;
-	}
-	inserted_to = strstr_m(result, inserted);
-	if (inserted_to == NULL) {
-		DEBUG(2, ("SMB_VFS_NEXT_REALPATH removed %s\n", inserted));
-		goto done;
-	}
-	inserted_end = inserted_to + talloc_get_size(inserted) - 1;
-	memmove(inserted_to, inserted_end, strlen(inserted_end)+1);
 
 done:
 	saved_errno = errno;
-	TALLOC_FREE(inserted);
 	TALLOC_FREE(tmp);
 	TALLOC_FREE(stripped);
 	errno = saved_errno;
@@ -1449,7 +1458,7 @@ static int shadow_copy2_get_shadow_copy_data(
 
 static NTSTATUS shadow_copy2_fget_nt_acl(vfs_handle_struct *handle,
 					struct files_struct *fsp,
-					uint32 security_info,
+					uint32_t security_info,
 					 TALLOC_CTX *mem_ctx,
 					struct security_descriptor **ppdesc)
 {
@@ -1481,7 +1490,7 @@ static NTSTATUS shadow_copy2_fget_nt_acl(vfs_handle_struct *handle,
 
 static NTSTATUS shadow_copy2_get_nt_acl(vfs_handle_struct *handle,
 					const char *fname,
-					uint32 security_info,
+					uint32_t security_info,
 					TALLOC_CTX *mem_ctx,
 					struct security_descriptor **ppdesc)
 {
@@ -1776,10 +1785,54 @@ static int shadow_copy2_get_real_filename(struct vfs_handle_struct *handle,
 	return ret;
 }
 
+static const char *shadow_copy2_connectpath(struct vfs_handle_struct *handle,
+					    const char *fname)
+{
+	time_t timestamp;
+	char *stripped = NULL;
+	char *tmp = NULL;
+	char *result = NULL;
+	int saved_errno;
+	size_t rootpath_len = 0;
+
+	DBG_DEBUG("Calc connect path for [%s]\n", fname);
+
+	if (!shadow_copy2_strip_snapshot(talloc_tos(), handle, fname,
+					 &timestamp, &stripped)) {
+		goto done;
+	}
+	if (timestamp == 0) {
+		return SMB_VFS_NEXT_CONNECTPATH(handle, fname);
+	}
+
+	tmp = shadow_copy2_do_convert(talloc_tos(), handle, stripped, timestamp,
+				      &rootpath_len);
+	if (tmp == NULL) {
+		goto done;
+	}
+
+	DBG_DEBUG("converted path is [%s] root path is [%.*s]\n", tmp,
+		  (int)rootpath_len, tmp);
+
+	tmp[rootpath_len] = '\0';
+	result = SMB_VFS_NEXT_REALPATH(handle, tmp);
+	if (result == NULL) {
+		goto done;
+	}
+
+	DBG_DEBUG("connect path is [%s]\n", result);
+
+done:
+	saved_errno = errno;
+	TALLOC_FREE(tmp);
+	TALLOC_FREE(stripped);
+	errno = saved_errno;
+	return result;
+}
+
 static uint64_t shadow_copy2_disk_free(vfs_handle_struct *handle,
-				       const char *path, bool small_query,
-				       uint64_t *bsize, uint64_t *dfree,
-				       uint64_t *dsize)
+				       const char *path, uint64_t *bsize,
+				       uint64_t *dfree, uint64_t *dsize)
 {
 	time_t timestamp;
 	char *stripped;
@@ -1792,7 +1845,7 @@ static uint64_t shadow_copy2_disk_free(vfs_handle_struct *handle,
 		return -1;
 	}
 	if (timestamp == 0) {
-		return SMB_VFS_NEXT_DISK_FREE(handle, path, small_query,
+		return SMB_VFS_NEXT_DISK_FREE(handle, path,
 					      bsize, dfree, dsize);
 	}
 
@@ -1802,8 +1855,40 @@ static uint64_t shadow_copy2_disk_free(vfs_handle_struct *handle,
 		return -1;
 	}
 
-	ret = SMB_VFS_NEXT_DISK_FREE(handle, conv, small_query, bsize, dfree,
-				     dsize);
+	ret = SMB_VFS_NEXT_DISK_FREE(handle, conv, bsize, dfree, dsize);
+
+	saved_errno = errno;
+	TALLOC_FREE(conv);
+	errno = saved_errno;
+
+	return ret;
+}
+
+static int shadow_copy2_get_quota(vfs_handle_struct *handle, const char *path,
+				  enum SMB_QUOTA_TYPE qtype, unid_t id,
+				  SMB_DISK_QUOTA *dq)
+{
+	time_t timestamp;
+	char *stripped;
+	int ret;
+	int saved_errno;
+	char *conv;
+
+	if (!shadow_copy2_strip_snapshot(talloc_tos(), handle, path, &timestamp,
+					 &stripped)) {
+		return -1;
+	}
+	if (timestamp == 0) {
+		return SMB_VFS_NEXT_GET_QUOTA(handle, path, qtype, id, dq);
+	}
+
+	conv = shadow_copy2_convert(talloc_tos(), handle, stripped, timestamp);
+	TALLOC_FREE(stripped);
+	if (conv == NULL) {
+		return -1;
+	}
+
+	ret = SMB_VFS_NEXT_GET_QUOTA(handle, conv, qtype, id, dq);
 
 	saved_errno = errno;
 	TALLOC_FREE(conv);
@@ -1820,7 +1905,8 @@ static int shadow_copy2_connect(struct vfs_handle_struct *handle,
 	const char *snapdir;
 	const char *gmt_format;
 	const char *sort_order;
-	const char *basedir;
+	const char *basedir = NULL;
+	const char *snapsharepath = NULL;
 	const char *mount_point;
 
 	DEBUG(10, (__location__ ": cnum[%u], connectpath[%s]\n",
@@ -1875,6 +1961,11 @@ static int shadow_copy2_connect(struct vfs_handle_struct *handle,
 						"shadow", "crossmountpoints",
 						false);
 
+	if (config->crossmountpoints && !config->snapdirseverywhere) {
+		DBG_WARNING("Warning: 'crossmountpoints' depends on "
+			    "'snapdirseverywhere'. Disabling crossmountpoints.\n");
+	}
+
 	config->fixinodes = lp_parm_bool(SNUM(handle->conn),
 					 "shadow", "fixinodes",
 					 false);
@@ -1901,11 +1992,12 @@ static int shadow_copy2_connect(struct vfs_handle_struct *handle,
 			char *p;
 			p = strstr(handle->conn->connectpath, mount_point);
 			if (p != handle->conn->connectpath) {
-				DEBUG(1, ("Warning: mount_point (%s) is not a "
-					  "subdirectory of the share root "
-					  "(%s). Ignoring provided value.\n",
-					  mount_point,
-					  handle->conn->connectpath));
+				DBG_WARNING("Warning: the share root (%s) is "
+					    "not a subdirectory of the "
+					    "specified mountpoint (%s). "
+					    "Ignoring provided value.\n",
+					    handle->conn->connectpath,
+					    mount_point);
 				mount_point = NULL;
 			}
 		}
@@ -1921,8 +2013,9 @@ static int shadow_copy2_connect(struct vfs_handle_struct *handle,
 		config->mount_point = shadow_copy2_find_mount_point(config,
 								    handle);
 		if (config->mount_point == NULL) {
-			DEBUG(0, (__location__ ": shadow_copy2_find_mount_point"
-				  " failed: %s\n", strerror(errno)));
+			DBG_WARNING("shadow_copy2_find_mount_point "
+				    "of the share root '%s' failed: %s\n",
+				    handle->conn->connectpath, strerror(errno));
 			return -1;
 		}
 	}
@@ -1936,6 +2029,7 @@ static int shadow_copy2_connect(struct vfs_handle_struct *handle,
 				  "relative ('%s'), but it has to be an "
 				  "absolute path. Disabling basedir.\n",
 				  basedir));
+			basedir = NULL;
 		} else {
 			char *p;
 			p = strstr(basedir, config->mount_point);
@@ -1945,37 +2039,58 @@ static int shadow_copy2_connect(struct vfs_handle_struct *handle,
 					  "mount point (%s). "
 					  "Disabling basedir\n",
 					  basedir, config->mount_point));
-			} else {
-				config->basedir = talloc_strdup(config,
-								basedir);
-				if (config->basedir == NULL) {
-					DEBUG(0, ("talloc_strdup() failed\n"));
-					errno = ENOMEM;
-					return -1;
-				}
+				basedir = NULL;
 			}
 		}
 	}
 
-	if (config->snapdirseverywhere && config->basedir != NULL) {
+	if (config->snapdirseverywhere && basedir != NULL) {
 		DEBUG(1, (__location__ " Warning: 'basedir' is incompatible "
 			  "with 'snapdirseverywhere'. Disabling basedir.\n"));
-		TALLOC_FREE(config->basedir);
+		basedir = NULL;
 	}
 
-	if (config->crossmountpoints && config->basedir != NULL) {
-		DEBUG(1, (__location__ " Warning: 'basedir' is incompatible "
-			  "with 'crossmountpoints'. Disabling basedir.\n"));
-		TALLOC_FREE(config->basedir);
+	snapsharepath = lp_parm_const_string(SNUM(handle->conn), "shadow",
+					     "snapsharepath", NULL);
+	if (snapsharepath != NULL) {
+		if (snapsharepath[0] == '/') {
+			DBG_WARNING("Warning: 'snapsharepath' is "
+				    "absolute ('%s'), but it has to be a "
+				    "relative path. Disabling snapsharepath.\n",
+				    snapsharepath);
+			snapsharepath = NULL;
+		}
+		if (config->snapdirseverywhere && snapsharepath != NULL) {
+			DBG_WARNING("Warning: 'snapsharepath' is incompatible "
+				    "with 'snapdirseverywhere'. Disabling "
+				    "snapsharepath.\n");
+			snapsharepath = NULL;
+		}
 	}
 
-	if (config->basedir == NULL) {
-		config->basedir = config->mount_point;
+	if (basedir != NULL && snapsharepath != NULL) {
+		DBG_WARNING("Warning: 'snapsharepath' is incompatible with "
+			    "'basedir'. Disabling snapsharepath\n");
+		snapsharepath = NULL;
 	}
 
-	if (strlen(config->basedir) != strlen(handle->conn->connectpath)) {
+	if (snapsharepath != NULL) {
+		config->rel_connectpath = talloc_strdup(config, snapsharepath);
+		if (config->rel_connectpath == NULL) {
+			DBG_ERR("talloc_strdup() failed\n");
+			errno = ENOMEM;
+			return -1;
+		}
+	}
+
+	if (basedir == NULL) {
+		basedir = config->mount_point;
+	}
+
+	if (config->rel_connectpath == NULL &&
+	    strlen(basedir) != strlen(handle->conn->connectpath)) {
 		config->rel_connectpath = talloc_strdup(config,
-			handle->conn->connectpath + strlen(config->basedir));
+			handle->conn->connectpath + strlen(basedir));
 		if (config->rel_connectpath == NULL) {
 			DEBUG(0, ("talloc_strdup() failed\n"));
 			errno = ENOMEM;
@@ -2013,7 +2128,6 @@ static int shadow_copy2_connect(struct vfs_handle_struct *handle,
 
 	DEBUG(10, ("shadow_copy2_connect: configuration:\n"
 		   "  share root: '%s'\n"
-		   "  basedir: '%s'\n"
 		   "  mountpoint: '%s'\n"
 		   "  rel share root: '%s'\n"
 		   "  snapdir: '%s'\n"
@@ -2026,7 +2140,6 @@ static int shadow_copy2_connect(struct vfs_handle_struct *handle,
 		   "  sort order: %s\n"
 		   "",
 		   handle->conn->connectpath,
-		   config->basedir,
 		   config->mount_point,
 		   config->rel_connectpath,
 		   config->snapdir,
@@ -2051,6 +2164,7 @@ static struct vfs_fn_pointers vfs_shadow_copy2_fns = {
 	.connect_fn = shadow_copy2_connect,
 	.opendir_fn = shadow_copy2_opendir,
 	.disk_free_fn = shadow_copy2_disk_free,
+	.get_quota_fn = shadow_copy2_get_quota,
 	.rename_fn = shadow_copy2_rename,
 	.link_fn = shadow_copy2_link,
 	.symlink_fn = shadow_copy2_symlink,
@@ -2078,6 +2192,7 @@ static struct vfs_fn_pointers vfs_shadow_copy2_fns = {
 	.chmod_acl_fn = shadow_copy2_chmod_acl,
 	.chflags_fn = shadow_copy2_chflags,
 	.get_real_filename_fn = shadow_copy2_get_real_filename,
+	.connectpath_fn = shadow_copy2_connectpath,
 };
 
 NTSTATUS vfs_shadow_copy2_init(void);

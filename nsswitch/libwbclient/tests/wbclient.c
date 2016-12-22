@@ -22,6 +22,7 @@
 #include "libcli/util/werror.h"
 #include "lib/util/data_blob.h"
 #include "lib/util/time.h"
+#include "libcli/resolve/resolve.h"
 #include "nsswitch/libwbclient/wbclient.h"
 #include "torture/smbtorture.h"
 #include "torture/winbind/proto.h"
@@ -57,23 +58,59 @@ static bool test_wbc_ping(struct torture_context *tctx)
 
 static bool test_wbc_pingdc(struct torture_context *tctx)
 {
-	torture_assert_wbc_equal(tctx, wbcPingDc("random_string", NULL), WBC_ERR_NOT_IMPLEMENTED,
+	struct wbcInterfaceDetails *details;
+
+	torture_assert_wbc_equal(tctx, wbcPingDc("random_string", NULL), WBC_ERR_DOMAIN_NOT_FOUND,
 				 "%s", "wbcPingDc failed");
 	torture_assert_wbc_ok(tctx, wbcPingDc(NULL, NULL),
 		"%s", "wbcPingDc failed");
 
+	torture_assert_wbc_ok(tctx, wbcInterfaceDetails(&details),
+		"%s", "wbcInterfaceDetails failed");
+	torture_assert(tctx, details,
+		       "wbcInterfaceDetails returned NULL pointer");
+	torture_assert(tctx, details->netbios_domain,
+		       "wbcInterfaceDetails returned NULL netbios_domain");
+
+	torture_assert_wbc_ok(tctx, wbcPingDc(details->netbios_domain, NULL),
+		"wbcPingDc(%s) failed", details->netbios_domain);
+
+	torture_assert_wbc_ok(tctx, wbcPingDc("BUILTIN", NULL),
+		"%s", "wbcPingDc(BUILTIN) failed");
+
+	wbcFreeMemory(details);
 	return true;
 }
 
 static bool test_wbc_pingdc2(struct torture_context *tctx)
 {
+	struct wbcInterfaceDetails *details;
 	char *name = NULL;
 
 	torture_assert_wbc_equal(tctx, wbcPingDc2("random_string", NULL, &name),
-				 WBC_ERR_NOT_IMPLEMENTED, "%s",
+				 WBC_ERR_DOMAIN_NOT_FOUND, "%s",
 				 "wbcPingDc2 failed");
 	torture_assert_wbc_ok(tctx, wbcPingDc2(NULL, NULL, &name), "%s",
 			      "wbcPingDc2 failed");
+
+	wbcFreeMemory(name);
+
+	torture_assert_wbc_ok(tctx, wbcInterfaceDetails(&details),
+		"%s", "wbcInterfaceDetails failed");
+	torture_assert(tctx, details,
+		       "wbcInterfaceDetails returned NULL pointer");
+	torture_assert(tctx, details->netbios_domain,
+		       "wbcInterfaceDetails returned NULL netbios_domain");
+
+	torture_assert_wbc_ok(tctx, wbcPingDc2(details->netbios_domain, NULL, &name),
+		"wbcPingDc2(%s) failed", details->netbios_domain);
+	wbcFreeMemory(name);
+
+	torture_assert_wbc_ok(tctx, wbcPingDc2("BUILTIN", NULL, &name),
+		"%s", "wbcPingDc2(BUILTIN) failed");
+	wbcFreeMemory(name);
+
+	wbcFreeMemory(details);
 
 	return true;
 }
@@ -368,6 +405,8 @@ static bool test_wbc_resolve_winsbyname(struct torture_context *tctx)
 
 	name = torture_setting_string(tctx, "host", NULL);
 
+	torture_comment(tctx, "test-WinsByName: host='%s'\n", name);
+
 	ret = wbcResolveWinsByName(name, &ip);
 
 	if (is_ipaddress(name)) {
@@ -382,10 +421,25 @@ static bool test_wbc_resolve_winsbyname(struct torture_context *tctx)
 static bool test_wbc_resolve_winsbyip(struct torture_context *tctx)
 {
 	const char *ip;
+	const char *host;
+	struct nbt_name nbt_name;
 	char *name;
 	wbcErr ret;
+	NTSTATUS status;
 
-	ip = torture_setting_string(tctx, "host", NULL);
+	host = torture_setting_string(tctx, "host", NULL);
+
+	torture_comment(tctx, "test-WinsByIp: host='%s'\n", host);
+
+	make_nbt_name_server(&nbt_name, host);
+
+	status = resolve_name_ex(lpcfg_resolve_context(tctx->lp_ctx),
+				 0, 0, &nbt_name, tctx, &ip, tctx->ev);
+	torture_assert_ntstatus_ok(tctx, status,
+			talloc_asprintf(tctx,"Failed to resolve %s: %s",
+					nbt_name.name, nt_errstr(status)));
+
+	torture_comment(tctx, "test-WinsByIp: ip='%s'\n", ip);
 
 	ret = wbcResolveWinsByIP(ip, &name);
 

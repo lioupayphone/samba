@@ -51,11 +51,12 @@ my $opt_testenv = 0;
 my $opt_list = 0;
 my $ldap = undef;
 my $opt_resetup_env = undef;
-my $opt_binary_mapping = "";
 my $opt_load_list = undef;
 my $opt_libnss_wrapper_so_path = "";
+my $opt_libresolv_wrapper_so_path = "";
 my $opt_libsocket_wrapper_so_path = "";
 my $opt_libuid_wrapper_so_path = "";
+my $opt_use_dns_faking = 0;
 my @testlists = ();
 
 my $srcdir = ".";
@@ -191,6 +192,8 @@ Generic options:
  --help                     this help page
  --target=samba[3]|win      Samba version to target
  --testlist=FILE            file to read available tests from
+ --exclude=FILE             Exclude tests listed in the file
+ --include=FILE             Include tests listed in the file
 
 Paths:
  --prefix=DIR               prefix to run tests in [st]
@@ -199,8 +202,13 @@ Paths:
 
 Preload cwrap:
  --nss_wrapper_so_path=FILE the nss_wrapper library to preload
+ --resolv_wrapper_so_path=FILE the resolv_wrapper library to preload
  --socket_wrapper_so_path=FILE the socket_wrapper library to preload
  --uid_wrapper_so_path=FILE the uid_wrapper library to preload
+
+DNS:
+  --use-dns-faking          Fake DNS entries rather than talking to our
+                            DNS implementation.
 
 Target Specific:
  --socket-wrapper-pcap      save traffic to pcap directories
@@ -240,10 +248,11 @@ my $result = GetOptions (
 		'testlist=s' => \@testlists,
 		'random-order' => \$opt_random_order,
 		'load-list=s' => \$opt_load_list,
-		'binary-mapping=s' => \$opt_binary_mapping,
 		'nss_wrapper_so_path=s' => \$opt_libnss_wrapper_so_path,
+		'resolv_wrapper_so_path=s' => \$opt_libresolv_wrapper_so_path,
 		'socket_wrapper_so_path=s' => \$opt_libsocket_wrapper_so_path,
-		'uid_wrapper_so_path=s' => \$opt_libuid_wrapper_so_path
+		'uid_wrapper_so_path=s' => \$opt_libuid_wrapper_so_path,
+		'use-dns-faking' => \$opt_use_dns_faking
 	    );
 
 exit(1) if (not $result);
@@ -349,6 +358,14 @@ if ($opt_libnss_wrapper_so_path) {
 	}
 }
 
+if ($opt_libresolv_wrapper_so_path) {
+	if ($ld_preload) {
+		$ld_preload = "$ld_preload:$opt_libresolv_wrapper_so_path";
+	} else {
+		$ld_preload = "$opt_libresolv_wrapper_so_path";
+	}
+}
+
 if ($opt_libsocket_wrapper_so_path) {
 	if ($ld_preload) {
 		$ld_preload = "$ld_preload:$opt_libsocket_wrapper_so_path";
@@ -382,43 +399,45 @@ if ($opt_socket_wrapper) {
 	$socket_wrapper_dir = SocketWrapper::setup_dir("$prefix_abs/w", $opt_socket_wrapper_pcap);
 	print "SOCKET_WRAPPER_DIR=$socket_wrapper_dir\n";
 } elsif (not $opt_list) {
-	 unless ($< == 0) { 
+	 unless ($< == 0) {
 		 warn("not using socket wrapper, but also not running as root. Will not be able to listen on proper ports");
 	 }
+}
+
+if ($opt_use_dns_faking) {
+	print "DNS: Faking nameserver\n";
+	$ENV{SAMBA_DNS_FAKING} = 1;
 }
 
 my $target;
 my $testenv_default = "none";
 
-my %binary_mapping = ();
-if ($opt_binary_mapping) {
-    my @binmapping_list = split(/,/, $opt_binary_mapping);
-    foreach my $mapping (@binmapping_list) {
-	my ($bin, $map) = split(/\:/, $mapping);
-	$binary_mapping{$bin} = $map;
-    }
-}
-
-$ENV{BINARY_MAPPING} = $opt_binary_mapping;
-
 # After this many seconds, the server will self-terminate.  All tests
 # must terminate in this time, and testenv will only stay alive this
 # long
 
-my $server_maxtime = 7500;
+my $server_maxtime;
+if ($opt_testenv) {
+    # 1 year should be enough :-)
+    $server_maxtime = 365 * 24 * 60 * 60;
+} else {
+    # make test should run under 4 hours
+    $server_maxtime = 4 * 60 * 60;
+}
+
 if (defined($ENV{SMBD_MAXTIME}) and $ENV{SMBD_MAXTIME} ne "") {
     $server_maxtime = $ENV{SMBD_MAXTIME};
 }
 
 unless ($opt_list) {
 	if ($opt_target eq "samba") {
-		$testenv_default = "dc";
+		$testenv_default = "ad_dc_ntvfs";
 		require target::Samba;
-		$target = new Samba($bindir, \%binary_mapping, $ldap, $srcdir, $server_maxtime);
+		$target = new Samba($bindir, $ldap, $srcdir, $server_maxtime);
 	} elsif ($opt_target eq "samba3") {
-		$testenv_default = "member";
+		$testenv_default = "nt4_member";
 		require target::Samba3;
-		$target = new Samba3($bindir, \%binary_mapping, $srcdir_abs, $server_maxtime);
+		$target = new Samba3($bindir, $srcdir_abs, $server_maxtime);
 	}
 }
 
@@ -560,7 +579,6 @@ sub write_clientconf($$$)
 	state directory = $clientdir/statedir
 	cache directory = $clientdir/cachedir
 	ncalrpc dir = $clientdir/ncalrpcdir
-	name resolve order = file bcast
 	panic action = $RealBin/gdb_backtrace \%d
 	max xmit = 32K
 	notify:inotify = false
@@ -571,7 +589,6 @@ sub write_clientconf($$$)
 	torture:basedir = $clientdir
 #We don't want to pass our self-tests if the PAC code is wrong
 	gensec:require_pac = true
-	resolv:host file = $prefix_abs/dns_host_file
 #We don't want to run 'speed' tests for very long
         torture:timelimit = 1
         winbind separator = /
@@ -748,6 +765,16 @@ my @exported_envvars = (
 	"DOMAIN",
 	"REALM",
 
+	# stuff related to a trusted domain
+	"TRUST_SERVER",
+	"TRUST_SERVER_IP",
+	"TRUST_SERVER_IPV6",
+	"TRUST_NETBIOSNAME",
+	"TRUST_USERNAME",
+	"TRUST_PASSWORD",
+	"TRUST_DOMAIN",
+	"TRUST_REALM",
+
 	# domain controller stuff
 	"DC_SERVER",
 	"DC_SERVER_IP",
@@ -796,6 +823,10 @@ my @exported_envvars = (
 	"DC_USERNAME",
 	"DC_PASSWORD",
 
+	# UID/GID for rfc2307 mapping tests
+	"UID_RFC2307TEST",
+	"GID_RFC2307TEST",
+
 	# misc stuff
 	"KRB5_CONFIG",
 	"SELFTEST_WINBINDD_SOCKET_DIR",
@@ -803,13 +834,16 @@ my @exported_envvars = (
 	"NMBD_SOCKET_DIR",
 	"LOCAL_PATH",
 
-        # nss_wrapper
-        "NSS_WRAPPER_PASSWD",
-        "NSS_WRAPPER_GROUP",
+	# nss_wrapper
+	"NSS_WRAPPER_PASSWD",
+	"NSS_WRAPPER_GROUP",
+	"NSS_WRAPPER_HOSTS",
+	"NSS_WRAPPER_MODULE_SO_PATH",
+	"NSS_WRAPPER_MODULE_FN_PREFIX",
 
-        # UID/GID for rfc2307 mapping tests
-        "UID_RFC2307TEST",
-        "GID_RFC2307TEST"
+	# resolv_wrapper
+	"RESOLV_WRAPPER_CONF",
+	"RESOLV_WRAPPER_HOSTS",
 );
 
 sub sighandler($)
@@ -984,6 +1018,9 @@ $envvarstr
 
 		unless (defined($listcmd)) {
 			warn("Unable to list tests in $name");
+			# Rather than ignoring this testsuite altogether, just pretend the entire testsuite is
+			# a single "test".
+			print "$name\n";
 			next;
 		}
 

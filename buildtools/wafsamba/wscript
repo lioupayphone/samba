@@ -2,9 +2,9 @@
 
 # this is a base set of waf rules that everything else pulls in first
 
-import sys, wafsamba, Configure, Logs
-import Options, os, preproc
-from samba_utils import *
+import os, sys
+import wafsamba, Configure, Logs, Options, Utils
+from samba_utils import os_path_relpath
 from optparse import SUPPRESS_HELP
 
 # this forces configure to be re-run if any of the configure
@@ -41,10 +41,10 @@ def set_options(opt):
                    help=("comma separated list of libraries to not apply extension to [%s]" % extension_exception),
                    action="store", dest='PRIVATE_EXTENSION_EXCEPTION', default=extension_exception)
 
-    builtin_defauilt = Options.options['BUILTIN_LIBRARIES_DEFAULT']
+    builtin_default = Options.options['BUILTIN_LIBRARIES_DEFAULT']
     gr.add_option('--builtin-libraries',
-                   help=("command separated list of libraries to build directly into binaries [%s]" % builtin_defauilt),
-                   action="store", dest='BUILTIN_LIBRARIES', default=builtin_defauilt)
+                   help=("command separated list of libraries to build directly into binaries [%s]" % builtin_default),
+                   action="store", dest='BUILTIN_LIBRARIES', default=builtin_default)
 
     gr.add_option('--minimum-library-version',
                    help=("list of minimum system library versions (LIBNAME1:version,LIBNAME2:version)"),
@@ -78,9 +78,6 @@ def set_options(opt):
                    help='additional directory to search for libiconv',
                    action='store', dest='iconv_open', default='/usr/local',
                    match = ['Checking for library iconv', 'Checking for iconv_open', 'Checking for header iconv.h'])
-    opt.add_option('--with-gettext',
-                   help='additional directory to search for gettext',
-                   action='store', dest='gettext_location', default='None')
     opt.add_option('--without-gettext',
                    help=("Disable use of gettext"),
                    action="store_true", dest='disable_gettext', default=False)
@@ -99,9 +96,13 @@ def set_options(opt):
     gr.add_option('--enable-developer',
                    help=("Turn on developer warnings and debugging"),
                    action="store_true", dest='developer', default=False)
+    def picky_developer_callback(option, opt_str, value, parser):
+        parser.values.developer = True
+        parser.values.picky_developer = True
     gr.add_option('--picky-developer',
                    help=("Treat all warnings as errors (enable -Werror)"),
-                   action="store_true", dest='picky_developer', default=False)
+                   action="callback", callback=picky_developer_callback,
+                   dest='picky_developer', default=False)
     gr.add_option('--fatal-errors',
                    help=("Stop compilation on first error (enable -Wfatal-errors)"),
                    action="store_true", dest='fatal_errors', default=False)
@@ -117,6 +118,9 @@ def set_options(opt):
     gr.add_option('--git-local-changes',
 		   help=("mark version with + if local git changes"),
 		   action='store_true', dest='GIT_LOCAL_CHANGES', default=False)
+    gr.add_option('--address-sanitizer',
+                   help=("Enable address sanitizer compile and linker flags"),
+                   action="store_true", dest='address_sanitizer', default=False)
 
     gr.add_option('--abi-check',
 		   help=("Check ABI signatures for libraries"),
@@ -192,8 +196,14 @@ def set_options(opt):
                    help='tag release in git at the same time',
                    type='string', action='store', dest='TAG_RELEASE')
 
+    opt.add_option('--extra-python', type=str,
+                    help=("build selected libraries for the specified "
+                          "additional version of Python "
+                          "(example: --extra-python=/usr/bin/python3)"),
+                    metavar="PYTHON", dest='EXTRA_PYTHON', default=None)
 
-@wafsamba.runonce
+
+@Utils.run_once
 def configure(conf):
     conf.env.hlist = []
     conf.env.srcdir = conf.srcdir
@@ -206,6 +216,7 @@ def configure(conf):
     # load our local waf extensions
     conf.check_tool('gnu_dirs')
     conf.check_tool('wafsamba')
+    conf.check_tool('print_commands')
 
     conf.CHECK_CC_ENV()
 
@@ -218,6 +229,11 @@ def configure(conf):
 
     # older gcc versions (< 4.4) does not work with gccdeps, so we have to see if the .d file is generated
     if Options.options.enable_gccdeps:
+        # stale file removal - the configuration may pick up the old .pyc file
+        p = os.path.join(conf.srcdir, 'buildtools/wafsamba/gccdeps.pyc')
+        if os.path.exists(p):
+            os.remove(p)
+
         from TaskGen import feature, after
         @feature('testd')
         @after('apply_core')
@@ -232,7 +248,7 @@ def configure(conf):
         cc.run = Task.compile_fun_noshell('cc', '${CC} ${CCFLAGS} ${CPPFLAGS} ${_CCINCFLAGS} ${_CCDEFFLAGS} ${CC_SRC_F}${SRC} ${CC_TGT_F}${TGT[0].abspath(env)}')[0]
         try:
             try:
-                conf.check(features='cc testd', fragment='int main() {return 0;}\n', ccflags=['-MD'], mandatory=True, msg='Check for -MD')
+                conf.check(features='c testd', fragment='int main() {return 0;}\n', ccflags=['-MD'], mandatory=True, msg='Check for -MD')
             except:
                 pass
             else:
@@ -262,6 +278,8 @@ def configure(conf):
     conf.env.AUTOCONF_BUILD = Options.options.AUTOCONF_BUILD
     conf.env.AUTOCONF_HOST  = Options.options.AUTOCONF_HOST
     conf.env.AUTOCONF_PROGRAM_PREFIX = Options.options.AUTOCONF_PROGRAM_PREFIX
+
+    conf.env.EXTRA_PYTHON = Options.options.EXTRA_PYTHON
 
     if (conf.env.AUTOCONF_HOST and
         conf.env.AUTOCONF_BUILD and
@@ -350,6 +368,40 @@ def configure(conf):
                         cflags=conf.env.VISIBILITY_CFLAGS,
                         define='HAVE_VISIBILITY_ATTR', addmain=False)
 
+    # check HAVE_CONSTRUCTOR_ATTRIBUTE
+    conf.CHECK_CODE('''
+            void test_constructor_attribute(void) __attribute__ ((constructor));
+
+            void test_constructor_attribute(void)
+            {
+                return;
+            }
+
+            int main(void) {
+                return 0;
+            }
+            ''',
+            'HAVE_CONSTRUCTOR_ATTRIBUTE',
+            addmain=False,
+            msg='Checking for library constructor support')
+
+        # check HAVE_DESTRUCTOR_ATTRIBUTE
+    conf.CHECK_CODE('''
+            void test_destructor_attribute(void) __attribute__ ((destructor));
+
+            void test_destructor_attribute(void)
+            {
+                return;
+            }
+
+            int main(void) {
+                return 0;
+            }
+            ''',
+            'HAVE_DESTRUCTOR_ATTRIBUTE',
+            addmain=False,
+            msg='Checking for library destructor support')
+
     if sys.platform.startswith('aix'):
         conf.DEFINE('_ALL_SOURCE', 1, add_to_cflags=True)
         # Might not be needed if ALL_SOURCE is defined
@@ -380,7 +432,7 @@ def configure(conf):
     conf.CHECK_INLINE()
 
     # check for pkgconfig
-    conf.check_cfg(atleast_pkgconfig_version='0.0.0')
+    conf.CHECK_CFG(atleast_pkgconfig_version='0.0.0')
 
     conf.DEFINE('_GNU_SOURCE', 1, add_to_cflags=True)
     conf.DEFINE('_XOPEN_SOURCE_EXTENDED', 1, add_to_cflags=True)

@@ -45,6 +45,7 @@
 #include "serverid.h"
 #include "messages.h"
 #include "../lib/util/pidfile.h"
+#include "smbprofile.h"
 
 static struct files_struct *log_writeable_file_fn(
 	struct files_struct *fsp, void *private_data)
@@ -177,12 +178,6 @@ static void exit_server_common(enum server_exit_reason how,
 		serverid_deregister(messaging_server_id(msg_ctx));
 	}
 
-#ifdef WITH_DFS
-	if (dcelogin_atmost_once) {
-		dfs_unlogin();
-	}
-#endif
-
 #ifdef USE_DMAPI
 	/* Destroy Samba DMAPI session only if we are master smbd process */
 	if (am_parent) {
@@ -224,6 +219,7 @@ static void exit_server_common(enum server_exit_reason how,
 			next = xconn->next;
 			DLIST_REMOVE(client->connections, xconn);
 			talloc_free(xconn);
+			DO_PROFILE_INC(disconnect);
 		}
 		TALLOC_FREE(client->sconn);
 	}
@@ -231,6 +227,7 @@ static void exit_server_common(enum server_exit_reason how,
 	xconn = NULL;
 	client = NULL;
 	TALLOC_FREE(global_smbXsrv_client);
+	smbprofile_dump();
 	server_messaging_context_free();
 	server_event_context_free();
 	TALLOC_FREE(smbd_memcache_ctx);
@@ -264,4 +261,16 @@ void smbd_exit_server(const char *const explanation)
 void smbd_exit_server_cleanly(const char *const explanation)
 {
 	exit_server_common(SERVER_EXIT_NORMAL, explanation);
+}
+
+/*
+ * reinit_after_fork() wrapper that should be called when forking from
+ * smbd.
+ */
+NTSTATUS smbd_reinit_after_fork(struct messaging_context *msg_ctx,
+				struct tevent_context *ev_ctx,
+				bool parent_longlived, const char *comment)
+{
+	am_parent = NULL;
+	return reinit_after_fork(msg_ctx, ev_ctx, parent_longlived, comment);
 }

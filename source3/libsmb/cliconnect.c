@@ -283,10 +283,6 @@ static void cli_session_setup_lanman2_done(struct tevent_req *subreq)
 	}
 	p += ret;
 
-	status = cli_set_username(cli, state->user);
-	if (tevent_req_nterror(req, status)) {
-		return;
-	}
 	tevent_req_done(req);
 }
 
@@ -491,11 +487,6 @@ static void cli_session_setup_guest_done(struct tevent_req *subreq)
 	}
 	p += ret;
 
-	status = cli_set_username(cli, "");
-	if (!NT_STATUS_IS_OK(status)) {
-		tevent_req_nterror(req, status);
-		return;
-	}
 	tevent_req_done(req);
 }
 
@@ -655,11 +646,6 @@ static void cli_session_setup_plain_done(struct tevent_req *subreq)
 		return;
 	}
 	p += ret;
-
-	status = cli_set_username(cli, state->user);
-	if (tevent_req_nterror(req, status)) {
-		return;
-	}
 
 	tevent_req_done(req);
 }
@@ -970,10 +956,6 @@ static void cli_session_setup_nt1_done(struct tevent_req *subreq)
 	}
 	p += ret;
 
-	status = cli_set_username(cli, state->user);
-	if (tevent_req_nterror(req, status)) {
-		return;
-	}
 	if (smb1cli_conn_activate_signing(cli->conn, state->session_key, state->response)
 	    && !smb1cli_conn_check_signing(cli->conn, (uint8_t *)in, 1)) {
 		tevent_req_nterror(req, NT_STATUS_ACCESS_DENIED);
@@ -1830,7 +1812,6 @@ static struct tevent_req *cli_session_setup_spnego_send(
 	int i;
 	const char *dest_realm = cli_state_remote_realm(cli);
 	const DATA_BLOB *server_blob;
-	NTSTATUS status;
 
 	req = tevent_req_create(mem_ctx, &state,
 				struct cli_session_setup_spnego_state);
@@ -1891,13 +1872,6 @@ static struct tevent_req *cli_session_setup_spnego_send(
 	}
 
 	DEBUG(3,("got principal=%s\n", principal ? principal : "<null>"));
-
-	status = cli_set_username(cli, user);
-	if (!NT_STATUS_IS_OK(status)) {
-		state->result = ADS_ERROR_NT(status);
-		tevent_req_done(req);
-		return tevent_req_post(req, ev);
-	}
 
 #ifdef HAVE_KRB5
 	/* If password is set we reauthenticate to kerberos server
@@ -3507,11 +3481,6 @@ static void cli_full_connection_sess_set_up(struct tevent_req *subreq)
 		return;
 	}
 
-	status = cli_init_creds(state->cli, state->user, state->domain,
-				state->password);
-	if (tevent_req_nterror(req, status)) {
-		return;
-	}
 	tevent_req_done(req);
 }
 
@@ -3519,8 +3488,6 @@ static void cli_full_connection_done(struct tevent_req *subreq)
 {
 	struct tevent_req *req = tevent_req_callback_data(
 		subreq, struct tevent_req);
-	struct cli_full_connection_state *state = tevent_req_data(
-		req, struct cli_full_connection_state);
 	NTSTATUS status;
 
 	status = cli_tree_connect_recv(subreq);
@@ -3528,11 +3495,7 @@ static void cli_full_connection_done(struct tevent_req *subreq)
 	if (tevent_req_nterror(req, status)) {
 		return;
 	}
-	status = cli_init_creds(state->cli, state->user, state->domain,
-				state->password);
-	if (tevent_req_nterror(req, status)) {
-		return;
-	}
+
 	tevent_req_done(req);
 }
 

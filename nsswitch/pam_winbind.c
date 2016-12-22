@@ -666,7 +666,7 @@ static int converse(const pam_handle_t *pamh,
 	retval = pam_get_item(pamh, PAM_CONV, (const void **) &conv);
 	if (retval == PAM_SUCCESS) {
 		retval = conv->conv(nargs,
-				    (const struct pam_message **)message,
+				    discard_const_p(const struct pam_message *, message),
 				    response, conv->appdata_ptr);
 	}
 
@@ -1262,7 +1262,7 @@ static void _pam_setup_krb5_env(struct pwb_context *ctx,
 	}
 
 	ret = pam_putenv(ctx->pamh, var);
-	if (ret) {
+	if (ret != PAM_SUCCESS) {
 		_pam_log(ctx, LOG_ERR,
 			 "failed to set KRB5CCNAME to %s: %s",
 			 var, pam_strerror(ctx->pamh, ret));
@@ -1328,7 +1328,7 @@ static void _pam_set_data_string(struct pwb_context *ctx,
 
 	ret = pam_set_data(ctx->pamh, data_name, talloc_strdup(NULL, value),
 			   _pam_winbind_cleanup_func);
-	if (ret) {
+	if (ret != PAM_SUCCESS) {
 		_pam_log_debug(ctx, LOG_DEBUG,
 			       "Could not set data %s: %s\n",
 			       data_name, pam_strerror(ctx->pamh, ret));
@@ -1656,7 +1656,7 @@ static int _pam_mkhomedir(struct pwb_context *ctx)
 		}
 
 		ret = _pam_create_homedir(ctx, create_dir, mode);
-		if (ret) {
+		if (ret != PAM_SUCCESS) {
 			return ret;
 		}
 	}
@@ -2001,7 +2001,7 @@ static int winbind_chauthtok_request(struct pwb_context *ctx,
 		}
 
 		/* FIXME: avoid to send multiple PAM messages after another */
-		switch (reject_reason) {
+		switch ((int)reject_reason) {
 			case -1:
 				break;
 			case WBC_PWD_CHANGE_NO_ERROR:
@@ -2369,7 +2369,7 @@ static const char *get_member_from_config(struct pwb_context *ctx)
 	const char *ret = NULL;
 	ret = get_conf_item_string(ctx, "require_membership_of",
 				   WINBIND_REQUIRED_MEMBERSHIP);
-	if (ret) {
+	if (ret != NULL) {
 		return ret;
 	}
 	return get_conf_item_string(ctx, "require-membership-of",
@@ -2421,7 +2421,7 @@ static char winbind_get_separator(struct pwb_context *ctx)
  * Convert a upn to a name.
  *
  * @param ctx PAM winbind context.
- * @param upn  USer UPN to be trabslated.
+ * @param upn  User UPN to be translated.
  *
  * @return converted name. NULL pointer on failure. Caller needs to free.
  */
@@ -2436,6 +2436,7 @@ static char* winbind_upn_to_username(struct pwb_context *ctx,
 	char *domain = NULL;
 	char *name;
 	char *p;
+	char *result;
 
 	/* This cannot work when the winbind separator = @ */
 
@@ -2467,7 +2468,10 @@ static char* winbind_upn_to_username(struct pwb_context *ctx,
 		return NULL;
 	}
 
-	return talloc_asprintf(ctx, "%s%c%s", domain, sep, name);
+	result = talloc_asprintf(ctx, "%s%c%s", domain, sep, name);
+	wbcFreeMemory(domain);
+	wbcFreeMemory(name);
+	return result;
 }
 
 static int _pam_delete_cred(pam_handle_t *pamh, int flags,
@@ -2484,7 +2488,7 @@ static int _pam_delete_cred(pam_handle_t *pamh, int flags,
 	ZERO_STRUCT(logoff);
 
 	retval = _pam_winbind_init_context(pamh, flags, argc, argv, type, &ctx);
-	if (retval) {
+	if (retval != PAM_SUCCESS) {
 		return retval;
 	}
 
@@ -2499,7 +2503,7 @@ static int _pam_delete_cred(pam_handle_t *pamh, int flags,
 		struct passwd *pwd = NULL;
 
 		retval = pam_get_user(pamh, &user, _("Username: "));
-		if (retval) {
+		if (retval != PAM_SUCCESS) {
 			_pam_log(ctx, LOG_ERR,
 				 "could not identify user");
 			goto out;
@@ -2620,7 +2624,7 @@ int pam_sm_authenticate(pam_handle_t *pamh, int flags,
 
 	retval = _pam_winbind_init_context(pamh, flags, argc, argv,
 					   PAM_WINBIND_AUTHENTICATE, &ctx);
-	if (retval) {
+	if (retval != PAM_SUCCESS) {
 		return retval;
 	}
 
@@ -2772,7 +2776,7 @@ int pam_sm_setcred(pam_handle_t *pamh, int flags,
 
 	ret = _pam_winbind_init_context(pamh, flags, argc, argv,
 					PAM_WINBIND_SETCRED, &ctx);
-	if (ret) {
+	if (ret != PAM_SUCCESS) {
 		return ret;
 	}
 
@@ -2826,7 +2830,7 @@ int pam_sm_acct_mgmt(pam_handle_t *pamh, int flags,
 
 	ret = _pam_winbind_init_context(pamh, flags, argc, argv,
 					PAM_WINBIND_ACCT_MGMT, &ctx);
-	if (ret) {
+	if (ret != PAM_SUCCESS) {
 		return ret;
 	}
 
@@ -2922,7 +2926,7 @@ int pam_sm_open_session(pam_handle_t *pamh, int flags,
 
 	ret = _pam_winbind_init_context(pamh, flags, argc, argv,
 					PAM_WINBIND_OPEN_SESSION, &ctx);
-	if (ret) {
+	if (ret != PAM_SUCCESS) {
 		return ret;
 	}
 
@@ -2949,7 +2953,7 @@ int pam_sm_close_session(pam_handle_t *pamh, int flags,
 
 	ret = _pam_winbind_init_context(pamh, flags, argc, argv,
 					PAM_WINBIND_CLOSE_SESSION, &ctx);
-	if (ret) {
+	if (ret != PAM_SUCCESS) {
 		return ret;
 	}
 
@@ -3035,7 +3039,7 @@ int pam_sm_chauthtok(pam_handle_t * pamh, int flags,
 
 	ret = _pam_winbind_init_context(pamh, flags, argc, argv,
 					PAM_WINBIND_CHAUTHTOK, &ctx);
-	if (ret) {
+	if (ret != PAM_SUCCESS) {
 		return ret;
 	}
 
@@ -3050,7 +3054,7 @@ int pam_sm_chauthtok(pam_handle_t * pamh, int flags,
 	 * First get the name of a user
 	 */
 	ret = pam_get_user(pamh, &user, _("Username: "));
-	if (ret) {
+	if (ret != PAM_SUCCESS) {
 		_pam_log(ctx, LOG_ERR,
 			 "password - could not identify user");
 		goto out;
@@ -3211,7 +3215,7 @@ int pam_sm_chauthtok(pam_handle_t * pamh, int flags,
 
 		ret = winbind_chauthtok_request(ctx, user, pass_old,
 						pass_new, pwdlastset_update);
-		if (ret) {
+		if (ret != PAM_SUCCESS) {
 			pass_old = pass_new = NULL;
 			goto out;
 		}

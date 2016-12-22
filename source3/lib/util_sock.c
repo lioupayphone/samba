@@ -28,6 +28,8 @@
 #include "../lib/util/tevent_unix.h"
 #include "../lib/util/tevent_ntstatus.h"
 #include "../lib/tsocket/tsocket.h"
+#include "lib/util/sys_rw.h"
+#include "lib/util/sys_rw_data.h"
 
 const char *client_addr(int fd, char *addr, size_t addrlen)
 {
@@ -196,132 +198,9 @@ NTSTATUS read_fd_with_timeout(int fd, char *buf,
  on socket calls.
 ****************************************************************************/
 
-NTSTATUS read_data(int fd, char *buffer, size_t N)
+NTSTATUS read_data_ntstatus(int fd, char *buffer, size_t N)
 {
 	return read_fd_with_timeout(fd, buffer, N, N, 0, NULL);
-}
-
-ssize_t iov_buflen(const struct iovec *iov, int iovcnt)
-{
-	size_t buflen = 0;
-	int i;
-
-	for (i=0; i<iovcnt; i++) {
-		size_t thislen = iov[i].iov_len;
-		size_t tmp = buflen + thislen;
-
-		if ((tmp < buflen) || (tmp < thislen)) {
-			/* overflow */
-			return -1;
-		}
-		buflen = tmp;
-	}
-	return buflen;
-}
-
-uint8_t *iov_buf(TALLOC_CTX *mem_ctx, const struct iovec *iov, int iovcnt)
-{
-	int i;
-	ssize_t buflen;
-	uint8_t *buf, *p;
-
-	buflen = iov_buflen(iov, iovcnt);
-	if (buflen == -1) {
-		return NULL;
-	}
-	buf = talloc_array(mem_ctx, uint8_t, buflen);
-	if (buf == NULL) {
-		return NULL;
-	}
-
-	p = buf;
-	for (i=0; i<iovcnt; i++) {
-		size_t len = iov[i].iov_len;
-
-		memcpy(p, iov[i].iov_base, len);
-		p += len;
-	}
-	return buf;
-}
-
-/****************************************************************************
- Write all data from an iov array
- NB. This can be called with a non-socket fd, don't add dependencies
- on socket calls.
-****************************************************************************/
-
-ssize_t write_data_iov(int fd, const struct iovec *orig_iov, int iovcnt)
-{
-	ssize_t to_send;
-	ssize_t thistime;
-	size_t sent;
-	struct iovec iov_copy[iovcnt];
-	struct iovec *iov;
-
-	to_send = iov_buflen(orig_iov, iovcnt);
-	if (to_send == -1) {
-		errno = EINVAL;
-		return -1;
-	}
-
-	thistime = sys_writev(fd, orig_iov, iovcnt);
-	if ((thistime <= 0) || (thistime == to_send)) {
-		return thistime;
-	}
-	sent = thistime;
-
-	/*
-	 * We could not send everything in one call. Make a copy of iov that
-	 * we can mess with. We keep a copy of the array start in iov_copy for
-	 * the TALLOC_FREE, because we're going to modify iov later on,
-	 * discarding elements.
-	 */
-
-	memcpy(iov_copy, orig_iov, sizeof(struct iovec) * iovcnt);
-	iov = iov_copy;
-
-	while (sent < to_send) {
-		/*
-		 * We have to discard "thistime" bytes from the beginning
-		 * iov array, "thistime" contains the number of bytes sent
-		 * via writev last.
-		 */
-		while (thistime > 0) {
-			if (thistime < iov[0].iov_len) {
-				char *new_base =
-					(char *)iov[0].iov_base + thistime;
-				iov[0].iov_base = (void *)new_base;
-				iov[0].iov_len -= thistime;
-				break;
-			}
-			thistime -= iov[0].iov_len;
-			iov += 1;
-			iovcnt -= 1;
-		}
-
-		thistime = sys_writev(fd, iov, iovcnt);
-		if (thistime <= 0) {
-			break;
-		}
-		sent += thistime;
-	}
-
-	return sent;
-}
-
-/****************************************************************************
- Write data to a fd.
- NB. This can be called with a non-socket fd, don't add dependencies
- on socket calls.
-****************************************************************************/
-
-ssize_t write_data(int fd, const char *buffer, size_t N)
-{
-	struct iovec iov;
-
-	iov.iov_base = discard_const_p(void, buffer);
-	iov.iov_len = N;
-	return write_data_iov(fd, &iov, 1);
 }
 
 /****************************************************************************
@@ -1191,7 +1070,7 @@ int get_remote_hostname(const struct tsocket_address *remote_address,
 	lookup_nc(&nc);
 
 	if (nc.name == NULL) {
-		*name = talloc_strdup(mem_ctx, "UNKOWN");
+		*name = talloc_strdup(mem_ctx, "UNKNOWN");
 	} else {
 		*name = talloc_strdup(mem_ctx, nc.name);
 	}
@@ -1508,7 +1387,7 @@ struct tevent_req *getaddrinfo_send(TALLOC_CTX *mem_ctx,
 static void getaddrinfo_do(void *private_data)
 {
 	struct getaddrinfo_state *state =
-		(struct getaddrinfo_state *)private_data;
+		talloc_get_type_abort(private_data, struct getaddrinfo_state);
 
 	state->ret = getaddrinfo(state->node, state->service, state->hints,
 				 &state->res);

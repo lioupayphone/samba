@@ -345,7 +345,7 @@ NTSTATUS do_unlock(struct messaging_context *msg_ctx,
 ****************************************************************************/
 
 NTSTATUS do_lock_cancel(files_struct *fsp,
-			uint64 smblctx,
+			uint64_t smblctx,
 			uint64_t count,
 			uint64_t offset,
 			enum brl_flavour lock_flav)
@@ -426,12 +426,14 @@ void locking_close_file(struct messaging_context *msg_ctx,
 
 char *share_mode_str(TALLOC_CTX *ctx, int num, const struct share_mode_entry *e)
 {
+	struct server_id_buf tmp;
+
 	return talloc_asprintf(ctx, "share_mode_entry[%d]: "
 		 "pid = %s, share_access = 0x%x, private_options = 0x%x, "
 		 "access_mask = 0x%x, mid = 0x%llx, type= 0x%x, gen_id = %llu, "
 		 "uid = %u, flags = %u, file_id %s, name_hash = 0x%x",
 		 num,
-		 procid_str_static(&e->pid),
+		 server_id_str_buf(e->pid, &tmp),
 		 e->share_access, e->private_options,
 		 e->access_mask, (unsigned long long)e->op_mid,
 		 e->op_type, (unsigned long long)e->share_file_id,
@@ -533,6 +535,8 @@ bool rename_share_filename(struct messaging_context *msg_ctx,
 	/* Send the messages. */
 	for (i=0; i<d->num_share_modes; i++) {
 		struct share_mode_entry *se = &d->share_modes[i];
+		struct server_id_buf tmp;
+
 		if (!is_valid_share_mode_entry(se)) {
 			continue;
 		}
@@ -557,13 +561,37 @@ bool rename_share_filename(struct messaging_context *msg_ctx,
 		DEBUG(10,("rename_share_filename: sending rename message to "
 			  "pid %s file_id %s sharepath %s base_name %s "
 			  "stream_name %s\n",
-			  procid_str_static(&se->pid),
+			  server_id_str_buf(se->pid, &tmp),
 			  file_id_string_tos(&id),
 			  d->servicepath, d->base_name,
 			has_stream ? d->stream_name : ""));
 
 		messaging_send_buf(msg_ctx, se->pid, MSG_SMB_FILE_RENAME,
-				   (uint8 *)frm, msg_len);
+				   (uint8_t *)frm, msg_len);
+	}
+
+	for (i=0; i<d->num_leases; i++) {
+		/* Update the filename in leases_db. */
+		NTSTATUS status;
+		struct share_mode_lease *l;
+
+		l = &d->leases[i];
+
+		status = leases_db_rename(&l->client_guid,
+					&l->lease_key,
+					&id,
+					d->servicepath,
+					d->base_name,
+					d->stream_name);
+		if (!NT_STATUS_IS_OK(status)) {
+			/* Any error recovery possible here ? */
+			DEBUG(1,("Failed to rename lease key for "
+				"renamed file %s:%s. %s\n",
+				d->base_name,
+				d->stream_name,
+				nt_errstr(status)));
+			continue;
+		}
 	}
 
 	for (i=0; i<d->num_leases; i++) {
@@ -729,6 +757,7 @@ static void remove_share_mode_lease(struct share_mode_data *d,
  */
 bool share_mode_stale_pid(struct share_mode_data *d, uint32_t idx)
 {
+	struct server_id_buf tmp;
 	struct share_mode_entry *e;
 
 	if (idx > d->num_share_modes) {
@@ -745,12 +774,12 @@ bool share_mode_stale_pid(struct share_mode_data *d, uint32_t idx)
 	}
 	if (serverid_exists(&e->pid)) {
 		DEBUG(10, ("PID %s (index %u out of %u) still exists\n",
-			   procid_str_static(&e->pid), idx,
+			   server_id_str_buf(e->pid, &tmp), idx,
 			   (unsigned)d->num_share_modes));
 		return false;
 	}
 	DEBUG(10, ("PID %s (index %u out of %u) does not exist anymore\n",
-		   procid_str_static(&e->pid), idx,
+		   server_id_str_buf(e->pid, &tmp), idx,
 		   (unsigned)d->num_share_modes));
 
 	e->stale = true;
@@ -841,7 +870,7 @@ bool set_share_mode(struct share_mode_lock *lck, struct files_struct *fsp,
 	e->time.tv_usec = fsp->open_time.tv_usec;
 	e->id = fsp->file_id;
 	e->share_file_id = fsp->fh->gen_id;
-	e->uid = (uint32)uid;
+	e->uid = (uint32_t)uid;
 	e->flags = (fsp->posix_flags & FSP_POSIX_FLAGS_OPEN) ?
 		SHARE_MODE_FLAG_POSIX_OPEN : 0;
 	e->name_hash = fsp->name_hash;

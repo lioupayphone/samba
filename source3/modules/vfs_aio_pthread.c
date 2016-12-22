@@ -41,7 +41,7 @@ static bool init_aio_threadpool(struct tevent_context *ev_ctx,
 				struct pthreadpool **pp_pool,
 				void (*completion_fn)(struct tevent_context *,
 						struct tevent_fd *,
-						uint16,
+						uint16_t,
 						void *))
 {
 	struct tevent_fd *sock_event = NULL;
@@ -51,7 +51,7 @@ static bool init_aio_threadpool(struct tevent_context *ev_ctx,
 		return true;
 	}
 
-	ret = pthreadpool_init(aio_pending_size, pp_pool);
+	ret = pthreadpool_init(lp_aio_max_threads(), pp_pool);
 	if (ret) {
 		errno = ret;
 		return false;
@@ -69,7 +69,7 @@ static bool init_aio_threadpool(struct tevent_context *ev_ctx,
 	}
 
 	DEBUG(10,("init_aio_threadpool: initialized with up to %d threads\n",
-		  aio_pending_size));
+		  (int)lp_aio_max_threads()));
 
 	return true;
 }
@@ -152,12 +152,13 @@ static struct aio_open_private_data *find_open_private_data_by_mid(uint64_t mid)
 
 static void aio_open_handle_completion(struct tevent_context *event_ctx,
 				struct tevent_fd *event,
-				uint16 flags,
+				uint16_t flags,
 				void *p)
 {
 	struct aio_open_private_data *opd = NULL;
 	int jobid = 0;
 	int ret;
+	struct smbXsrv_connection *xconn;
 
 	DEBUG(10, ("aio_open_handle_completion called with flags=%d\n",
 		(int)flags));
@@ -191,8 +192,15 @@ static void aio_open_handle_completion(struct tevent_context *event_ctx,
 
 	opd->in_progress = false;
 
-	/* Find outstanding event and reschdule. */
-	if (!schedule_deferred_open_message_smb(opd->sconn, opd->mid)) {
+	/*
+	 * TODO: In future we need a proper algorithm
+	 * to find the correct connection for a fsp.
+	 * For now we only have one connection, so this is correct...
+	 */
+	xconn = opd->sconn->client->connections;
+
+	/* Find outstanding event and reschedule. */
+	if (!schedule_deferred_open_message_smb(xconn, opd->mid)) {
 		/*
 		 * Outstanding event didn't exist or was
 		 * cancelled. Free up the fd and throw
@@ -333,7 +341,7 @@ static struct aio_open_private_data *create_private_open_data(const files_struct
 	}
 
 	talloc_set_destructor(opd, opd_destructor);
-	DLIST_ADD_END(open_pd_list, opd, struct aio_open_private_data *);
+	DLIST_ADD_END(open_pd_list, opd);
 	return opd;
 }
 

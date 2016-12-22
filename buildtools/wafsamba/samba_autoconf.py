@@ -1,10 +1,10 @@
 # a waf tool to add autoconf-like macros to the configure section
 
-import Build, os, sys, Options, preproc, Logs
-import string
+import os, sys
+import Build, Options, preproc, Logs
 from Configure import conf
-from samba_utils import *
-import samba_cross
+from TaskGen import feature
+from samba_utils import TO_LIST, GET_TARGET_TYPE, SET_TARGET_TYPE, unique_list, mkdir_p
 
 missing_headers = set()
 
@@ -13,7 +13,6 @@ missing_headers = set()
 # to waf a bit easier for those used to autoconf
 # m4 files
 
-@runonce
 @conf
 def DEFINE(conf, d, v, add_to_cflags=False, quote=False):
     '''define a config option'''
@@ -101,6 +100,7 @@ def CHECK_HEADER(conf, h, add_headers=False, lib=None):
                      type='nolink',
                      execute=0,
                      ccflags=ccflags,
+                     mandatory=False,
                      includes=cpppath,
                      uselib=lib.upper(),
                      msg="Checking for header %s" % h)
@@ -486,6 +486,7 @@ def CHECK_LDFLAGS(conf, ldflags):
     return conf.check(fragment='int main(void) { return 0; }\n',
                       execute=0,
                       ldflags=ldflags,
+                      mandatory=False,
                       msg="Checking linker accepts %s" % ldflags)
 
 
@@ -569,9 +570,9 @@ int foo()
 
         (ccflags, ldflags, cpppath) = library_flags(conf, lib)
         if shlib:
-            res = conf.check(features='cc cshlib', fragment=fragment, lib=lib, uselib_store=lib, ccflags=ccflags, ldflags=ldflags, uselib=lib.upper())
+            res = conf.check(features='c cshlib', fragment=fragment, lib=lib, uselib_store=lib, ccflags=ccflags, ldflags=ldflags, uselib=lib.upper(), mandatory=False)
         else:
-            res = conf.check(lib=lib, uselib_store=lib, ccflags=ccflags, ldflags=ldflags, uselib=lib.upper())
+            res = conf.check(lib=lib, uselib_store=lib, ccflags=ccflags, ldflags=ldflags, uselib=lib.upper(), mandatory=False)
 
         if not res:
             if mandatory:
@@ -657,9 +658,24 @@ def SAMBA_CONFIG_H(conf, path=None):
     if not IN_LAUNCH_DIR(conf):
         return
 
-    if conf.CHECK_CFLAGS(['-fstack-protector']) and conf.CHECK_LDFLAGS(['-fstack-protector']):
-        conf.ADD_CFLAGS('-fstack-protector')
-        conf.ADD_LDFLAGS('-fstack-protector')
+    # we need to build real code that can't be optimized away to test
+    if conf.check(fragment='''
+        #include <stdio.h>
+
+        int main(void)
+        {
+            char t[100000];
+            while (fgets(t, sizeof(t), stdin));
+            return 0;
+        }
+        ''',
+        execute=0,
+        ccflags='-fstack-protector',
+        ldflags='-fstack-protector',
+        mandatory=False,
+        msg='Checking if toolchain accepts -fstack-protector'):
+            conf.ADD_CFLAGS('-fstack-protector')
+            conf.ADD_LDFLAGS('-fstack-protector')
 
     if Options.options.debug:
         conf.ADD_CFLAGS('-g', testflags=True)
@@ -688,6 +704,8 @@ def SAMBA_CONFIG_H(conf, path=None):
                         testflags=True)
         conf.ADD_CFLAGS('-Werror=return-type -Wreturn-type',
                         testflags=True)
+        conf.ADD_CFLAGS('-Werror=uninitialized -Wuninitialized',
+                        testflags=True)
 
         conf.ADD_CFLAGS('-Wformat=2 -Wno-format-y2k', testflags=True)
         # This check is because for ldb_search(), a NULL format string
@@ -706,13 +724,18 @@ int main(void) {
             conf.env['EXTRA_CFLAGS'].extend(TO_LIST("-Werror=format"))
 
     if Options.options.picky_developer:
-        conf.ADD_NAMED_CFLAGS('PICKY_CFLAGS', '-Werror', testflags=True)
+        conf.ADD_NAMED_CFLAGS('PICKY_CFLAGS', '-Werror -Wno-error=deprecated-declarations', testflags=True)
 
     if Options.options.fatal_errors:
         conf.ADD_CFLAGS('-Wfatal-errors', testflags=True)
 
     if Options.options.pedantic:
         conf.ADD_CFLAGS('-W', testflags=True)
+
+    if Options.options.address_sanitizer:
+        conf.ADD_CFLAGS('-fno-omit-frame-pointer -O1 -fsanitize=address', testflags=True)
+        conf.ADD_LDFLAGS('-fsanitize=address', testflags=True)
+        conf.env['ADDRESS_SANITIZER'] = True
 
 
     # Let people pass an additional ADDITIONAL_{CFLAGS,LDFLAGS}
@@ -793,7 +816,7 @@ def ADD_EXTRA_INCLUDES(conf, includes):
 
 
 
-def CURRENT_CFLAGS(bld, target, cflags, allow_warnings=True, hide_symbols=False):
+def CURRENT_CFLAGS(bld, target, cflags, allow_warnings=False, hide_symbols=False):
     '''work out the current flags. local flags are added first'''
     ret = TO_LIST(cflags)
     if not 'EXTRA_CFLAGS' in bld.env:
@@ -850,3 +873,7 @@ def SAMBA_CHECK_UNDEFINED_SYMBOL_FLAGS(conf):
     if not sys.platform.startswith("openbsd") and conf.env.undefined_ignore_ldflags == []:
         if conf.CHECK_LDFLAGS(['-undefined', 'dynamic_lookup']):
             conf.env.undefined_ignore_ldflags = ['-undefined', 'dynamic_lookup']
+
+@conf
+def CHECK_CFG(self, *k, **kw):
+    return self.check_cfg(*k, **kw)

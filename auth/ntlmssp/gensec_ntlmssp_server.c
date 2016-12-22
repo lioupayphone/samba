@@ -35,6 +35,7 @@
 #include "auth/common_auth.h"
 #include "param/param.h"
 #include "param/loadparm.h"
+#include "libds/common/roles.h"
 
 /**
  * Return the credentials of a logged on user, including session keys

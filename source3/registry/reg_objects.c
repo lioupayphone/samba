@@ -188,7 +188,7 @@ static WERROR regsubkey_ctr_index_for_keyname(struct regsubkey_ctr *ctr,
 	}
 
 	if (idx != NULL) {
-		*idx = *(uint32_t *)data.dptr;
+		memcpy(idx, data.dptr, sizeof(*idx));
 	}
 
 	talloc_free(data.dptr);
@@ -304,7 +304,7 @@ int regsubkey_ctr_numkeys( struct regsubkey_ctr *ctr )
 }
 
 /***********************************************************************
- Retreive a specific key string
+ Retrieve a specific key string
  **********************************************************************/
 
 char* regsubkey_ctr_specific_key( struct regsubkey_ctr *ctr, uint32_t key_index )
@@ -378,7 +378,7 @@ uint32_t regval_type(struct regval_blob *val)
 }
 
 /***********************************************************************
- Retreive a pointer to a specific value.  Caller shoud dup the structure
+ Retrieve a pointer to a specific value.  Caller shoud dup the structure
  since this memory will go away when the ctr is free()'d
  **********************************************************************/
 
@@ -611,31 +611,4 @@ WERROR regval_ctr_set_seqnum(struct regval_ctr *ctr, int seqnum)
 	ctr->seqnum = seqnum;
 
 	return WERR_OK;
-}
-
-/***********************************************************************
- return the data_p as a uint32_t
- **********************************************************************/
-
-uint32_t regval_dword(struct regval_blob *val)
-{
-	uint32_t data;
-
-	data = IVAL( regval_data_p(val), 0 );
-
-	return data;
-}
-
-/***********************************************************************
- return the data_p as a character string
- **********************************************************************/
-
-const char *regval_sz(struct regval_blob *val)
-{
-	const char *data = NULL;
-	DATA_BLOB blob = data_blob_const(regval_data_p(val), regval_size(val));
-
-	pull_reg_sz(talloc_tos(), &blob, &data);
-
-	return data;
 }

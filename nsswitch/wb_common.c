@@ -88,7 +88,7 @@ static void winbind_close_sock(struct winbindd_context *ctx)
 
 /* Destructor for global context to ensure fd is closed */
 
-#if HAVE_FUNCTION_ATTRIBUTE_DESTRUCTOR
+#if HAVE_DESTRUCTOR_ATTRIBUTE
 __attribute__((destructor))
 #endif
 static void winbind_destructor(void)
@@ -195,7 +195,7 @@ static int make_safe_fd(int fd)
  * @brief Check if we talk to the priviliged pipe which should be owned by root.
  *
  * This checks if we have uid_wrapper running and if this is the case it will
- * allow to connect to the winbind privileged pipe even it is not owned by root.
+ * allow one to connect to the winbind privileged pipe even it is not owned by root.
  *
  * @param[in]  uid      The uid to check if we can safely talk to the pipe.
  *
@@ -220,10 +220,10 @@ static int winbind_named_pipe_sock(const char *dir)
 {
 	struct sockaddr_un sunaddr;
 	struct stat st;
-	char *path = NULL;
 	int fd;
 	int wait_time;
 	int slept;
+	int ret;
 
 	/* Check permissions on unix socket directory */
 
@@ -244,25 +244,24 @@ static int winbind_named_pipe_sock(const char *dir)
 
 	/* Connect to socket */
 
-	if (asprintf(&path, "%s/%s", dir, WINBINDD_SOCKET_NAME) < 0) {
+	sunaddr = (struct sockaddr_un) { .sun_family = AF_UNIX };
+
+	ret = snprintf(sunaddr.sun_path, sizeof(sunaddr.sun_path),
+		       "%s/%s", dir, WINBINDD_SOCKET_NAME);
+	if ((ret == -1) || (ret >= sizeof(sunaddr.sun_path))) {
+		errno = ENAMETOOLONG;
 		return -1;
 	}
-
-	ZERO_STRUCT(sunaddr);
-	sunaddr.sun_family = AF_UNIX;
-	strncpy(sunaddr.sun_path, path, sizeof(sunaddr.sun_path) - 1);
 
 	/* If socket file doesn't exist, don't bother trying to connect
 	   with retry.  This is an attempt to make the system usable when
 	   the winbindd daemon is not running. */
 
-	if (lstat(path, &st) == -1) {
+	if (lstat(sunaddr.sun_path, &st) == -1) {
 		errno = ENOENT;
-		SAFE_FREE(path);
 		return -1;
 	}
 
-	SAFE_FREE(path);
 	/* Check permissions on unix socket file */
 
 	/*
@@ -290,7 +289,6 @@ static int winbind_named_pipe_sock(const char *dir)
 	for (wait_time = 0; connect(fd, (struct sockaddr *)&sunaddr, sizeof(sunaddr)) == -1;
 			wait_time += slept) {
 		struct pollfd pfd;
-		int ret;
 		int connect_errno = 0;
 		socklen_t errnosize;
 
@@ -537,7 +535,7 @@ static int winbind_read_sock(struct winbindd_context *ctx,
 
 		if (ret == 0) {
 			/* Not ready for read yet... */
-			if (total_time >= 30) {
+			if (total_time >= 300) {
 				/* Timeout */
 				winbind_close_sock(ctx);
 				return -1;
@@ -586,6 +584,13 @@ static int winbindd_read_reply(struct winbindd_context *ctx,
 
 	result1 = winbind_read_sock(ctx, response,
 				    sizeof(struct winbindd_response));
+
+	/* We actually send the pointer value of the extra_data field from
+	   the server.  This has no meaning in the client's address space
+	   so we clear it out. */
+
+	response->extra_data.data = NULL;
+
 	if (result1 == -1) {
 		return -1;
 	}
@@ -593,12 +598,6 @@ static int winbindd_read_reply(struct winbindd_context *ctx,
 	if (response->length < sizeof(struct winbindd_response)) {
 		return -1;
 	}
-
-	/* We actually send the pointer value of the extra_data field from
-	   the server.  This has no meaning in the client's address space
-	   so we clear it out. */
-
-	response->extra_data.data = NULL;
 
 	/* Read variable length response */
 
@@ -720,20 +719,16 @@ NSS_STATUS winbindd_request_response(struct winbindd_context *ctx,
 				     struct winbindd_response *response)
 {
 	NSS_STATUS status = NSS_STATUS_UNAVAIL;
-	int count = 0;
 	struct winbindd_context *wb_ctx = ctx;
 
 	if (ctx == NULL) {
 		wb_ctx = &wb_global_ctx;
 	}
 
-	while ((status == NSS_STATUS_UNAVAIL) && (count < 10)) {
-		status = winbindd_send_request(wb_ctx, req_type, 0, request);
-		if (status != NSS_STATUS_SUCCESS)
-			return(status);
-		status = winbindd_get_response(wb_ctx, response);
-		count += 1;
-	}
+	status = winbindd_send_request(wb_ctx, req_type, 0, request);
+	if (status != NSS_STATUS_SUCCESS)
+		return (status);
+	status = winbindd_get_response(wb_ctx, response);
 
 	return status;
 }
@@ -744,20 +739,16 @@ NSS_STATUS winbindd_priv_request_response(struct winbindd_context *ctx,
 					  struct winbindd_response *response)
 {
 	NSS_STATUS status = NSS_STATUS_UNAVAIL;
-	int count = 0;
 	struct winbindd_context *wb_ctx = ctx;
 
 	if (ctx == NULL) {
 		wb_ctx = &wb_global_ctx;
 	}
 
-	while ((status == NSS_STATUS_UNAVAIL) && (count < 10)) {
-		status = winbindd_send_request(wb_ctx, req_type, 1, request);
-		if (status != NSS_STATUS_SUCCESS)
-			return(status);
-		status = winbindd_get_response(wb_ctx, response);
-		count += 1;
-	}
+	status = winbindd_send_request(wb_ctx, req_type, 1, request);
+	if (status != NSS_STATUS_SUCCESS)
+		return (status);
+	status = winbindd_get_response(wb_ctx, response);
 
 	return status;
 }

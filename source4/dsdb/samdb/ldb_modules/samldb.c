@@ -42,6 +42,7 @@
 #include "ldb_wrap.h"
 #include "param/param.h"
 #include "libds/common/flag_mapping.h"
+#include "system/network.h"
 
 struct samldb_ctx;
 enum samldb_add_type {
@@ -695,7 +696,7 @@ static int samldb_fill_object(struct samldb_ctx *ac)
 						  "rdnAttId", "cn");
 		if (ret != LDB_SUCCESS) return ret;
 
-		/* do not allow to mark an attributeSchema as RODC filtered if it
+		/* do not allow one to mark an attributeSchema as RODC filtered if it
 		 * is system-critical */
 		if (check_rodc_critical_attribute(ac->msg)) {
 			ldb_asprintf_errstring(ldb, "Refusing schema add of %s - cannot combine critical class with RODC filtering",
@@ -796,7 +797,7 @@ static int samldb_fill_object(struct samldb_ctx *ac)
 			}
 		}
 
-		/* do not allow to mark an attributeSchema as RODC filtered if it
+		/* do not allow one to mark an attributeSchema as RODC filtered if it
 		 * is system-critical */
 		if (check_rodc_critical_attribute(ac->msg)) {
 			ldb_asprintf_errstring(ldb,
@@ -945,10 +946,10 @@ static int samldb_schema_info_update(struct samldb_ctx *ac)
 }
 
 static int samldb_prim_group_tester(struct samldb_ctx *ac, uint32_t rid);
-static int samldb_check_user_account_control_acl(struct samldb_ctx *ac,
-						 struct dom_sid *sid,
-						 uint32_t user_account_control,
-						 uint32_t user_account_control_old);
+static int samldb_check_user_account_control_rules(struct samldb_ctx *ac,
+						   struct dom_sid *sid,
+						   uint32_t user_account_control,
+						   uint32_t user_account_control_old);
 
 /*
  * "Objectclass" trigger (MS-SAMR 3.1.1.8.1)
@@ -999,32 +1000,7 @@ static int samldb_objectclass_trigger(struct samldb_ctx *ac)
 		bool uac_generated = false, uac_add_flags = false;
 
 		/* Step 1.2: Default values */
-		ret = samdb_find_or_add_attribute(ldb, ac->msg,
-			"accountExpires", "9223372036854775807");
-		if (ret != LDB_SUCCESS) return ret;
-		ret = samdb_find_or_add_attribute(ldb, ac->msg,
-			"badPasswordTime", "0");
-		if (ret != LDB_SUCCESS) return ret;
-		ret = samdb_find_or_add_attribute(ldb, ac->msg,
-			"badPwdCount", "0");
-		if (ret != LDB_SUCCESS) return ret;
-		ret = samdb_find_or_add_attribute(ldb, ac->msg,
-			"codePage", "0");
-		if (ret != LDB_SUCCESS) return ret;
-		ret = samdb_find_or_add_attribute(ldb, ac->msg,
-			"countryCode", "0");
-		if (ret != LDB_SUCCESS) return ret;
-		ret = samdb_find_or_add_attribute(ldb, ac->msg,
-			"lastLogoff", "0");
-		if (ret != LDB_SUCCESS) return ret;
-		ret = samdb_find_or_add_attribute(ldb, ac->msg,
-			"lastLogon", "0");
-		if (ret != LDB_SUCCESS) return ret;
-		ret = samdb_find_or_add_attribute(ldb, ac->msg,
-			"logonCount", "0");
-		if (ret != LDB_SUCCESS) return ret;
-		ret = samdb_find_or_add_attribute(ldb, ac->msg,
-			"pwdLastSet", "0");
+		ret = dsdb_user_obj_set_defaults(ldb, ac->msg);
 		if (ret != LDB_SUCCESS) return ret;
 
 		/* On add operations we might need to generate a
@@ -1043,14 +1019,18 @@ static int samldb_objectclass_trigger(struct samldb_ctx *ac)
 
 		el = ldb_msg_find_element(ac->msg, "userAccountControl");
 		if (el != NULL) {
-			uint32_t user_account_control, account_type;
+			uint32_t user_account_control;
 			/* Step 1.3: "userAccountControl" -> "sAMAccountType" mapping */
 			user_account_control = ldb_msg_find_attr_as_uint(ac->msg,
 									 "userAccountControl",
 									 0);
-			/* "userAccountControl" = 0 means "UF_NORMAL_ACCOUNT" */
-			if (user_account_control == 0) {
-				user_account_control = UF_NORMAL_ACCOUNT;
+			/*
+			 * "userAccountControl" = 0 or missing one of
+			 * the types means "UF_NORMAL_ACCOUNT".  See
+			 * MS-SAMR 3.1.1.8.10 point 8
+			 */
+			if ((user_account_control & UF_ACCOUNT_TYPE_MASK) == 0) {
+				user_account_control = UF_NORMAL_ACCOUNT | user_account_control;
 				uac_generated = true;
 			}
 
@@ -1066,9 +1046,10 @@ static int samldb_objectclass_trigger(struct samldb_ctx *ac)
 				uac_generated = true;
 			}
 
-			/* Temporary duplicate accounts aren't allowed */
-			if ((user_account_control & UF_TEMP_DUPLICATE_ACCOUNT) != 0) {
-				return LDB_ERR_OTHER;
+			ret = samldb_check_user_account_control_rules(ac, NULL,
+								      user_account_control, 0);
+			if (ret != LDB_SUCCESS) {
+				return ret;
 			}
 
 			/* Workstation and (read-only) DC objects do need objectclass "computer" */
@@ -1081,19 +1062,11 @@ static int samldb_objectclass_trigger(struct samldb_ctx *ac)
 				return LDB_ERR_OBJECT_CLASS_VIOLATION;
 			}
 
-			account_type = ds_uf2atype(user_account_control);
-			if (account_type == 0) {
-				ldb_set_errstring(ldb, "samldb: Unrecognized account type!");
-				return LDB_ERR_UNWILLING_TO_PERFORM;
-			}
-			ret = samdb_msg_add_uint(ldb, ac->msg, ac->msg,
-						 "sAMAccountType",
-						 account_type);
+			/* add "sAMAccountType" attribute */
+			ret = dsdb_user_obj_set_account_type(ldb, ac->msg, user_account_control, NULL);
 			if (ret != LDB_SUCCESS) {
 				return ret;
 			}
-			el2 = ldb_msg_find_element(ac->msg, "sAMAccountType");
-			el2->flags = LDB_FLAG_MOD_REPLACE;
 
 			/* "isCriticalSystemObject" might be set */
 			if (user_account_control &
@@ -1119,8 +1092,12 @@ static int samldb_objectclass_trigger(struct samldb_ctx *ac)
 
 			/* Step 1.4: "userAccountControl" -> "primaryGroupID" mapping */
 			if (!ldb_msg_find_element(ac->msg, "primaryGroupID")) {
-				uint32_t rid = ds_uf2prim_group_rid(user_account_control);
+				uint32_t rid;
 
+				ret = dsdb_user_obj_set_primary_group_id(ldb, ac->msg, user_account_control, &rid);
+				if (ret != LDB_SUCCESS) {
+					return ret;
+				}
 				/*
 				 * Older AD deployments don't know about the
 				 * RODC group
@@ -1131,15 +1108,6 @@ static int samldb_objectclass_trigger(struct samldb_ctx *ac)
 						return ret;
 					}
 				}
-
-				ret = samdb_msg_add_uint(ldb, ac->msg, ac->msg,
-							 "primaryGroupID", rid);
-				if (ret != LDB_SUCCESS) {
-					return ret;
-				}
-				el2 = ldb_msg_find_element(ac->msg,
-							   "primaryGroupID");
-				el2->flags = LDB_FLAG_MOD_REPLACE;
 			}
 
 			/* Step 1.5: Add additional flags when needed */
@@ -1160,11 +1128,6 @@ static int samldb_objectclass_trigger(struct samldb_ctx *ac)
 				}
 			}
 
-			ret = samldb_check_user_account_control_acl(ac, NULL,
-								    user_account_control, 0);
-			if (ret != LDB_SUCCESS) {
-				return ret;
-			}
 		}
 		break;
 	}
@@ -1289,11 +1252,15 @@ static int samldb_prim_group_set(struct samldb_ctx *ac)
 static int samldb_prim_group_change(struct samldb_ctx *ac)
 {
 	struct ldb_context *ldb = ldb_module_get_ctx(ac->module);
-	const char * const attrs[] = { "primaryGroupID", "memberOf", NULL };
+	const char * const attrs[] = {
+		"primaryGroupID",
+		"memberOf",
+		"userAccountControl",
+		NULL };
 	struct ldb_result *res, *group_res;
 	struct ldb_message_element *el;
 	struct ldb_message *msg;
-	uint32_t prev_rid, new_rid;
+	uint32_t prev_rid, new_rid, uac;
 	struct dom_sid *prev_sid, *new_sid;
 	struct ldb_dn *prev_prim_group_dn, *new_prim_group_dn;
 	int ret;
@@ -1313,6 +1280,8 @@ static int samldb_prim_group_change(struct samldb_ctx *ac)
 	if (ret != LDB_SUCCESS) {
 		return ret;
 	}
+
+	uac = ldb_msg_find_attr_as_uint(res->msgs[0], "userAccountControl", 0);
 
 	/* Finds out the DN of the old primary group */
 
@@ -1351,6 +1320,24 @@ static int samldb_prim_group_change(struct samldb_ctx *ac)
 
 	if (prev_rid == new_rid) {
 		return LDB_SUCCESS;
+	}
+
+	if ((uac & UF_SERVER_TRUST_ACCOUNT) && new_rid != DOMAIN_RID_DCS) {
+		ldb_asprintf_errstring(ldb,
+			"%08X: samldb: UF_SERVER_TRUST_ACCOUNT requires "
+			"primaryGroupID=%u!",
+			W_ERROR_V(WERR_DS_CANT_MOD_PRIMARYGROUPID),
+			DOMAIN_RID_DCS);
+		return LDB_ERR_UNWILLING_TO_PERFORM;
+	}
+
+	if ((uac & UF_PARTIAL_SECRETS_ACCOUNT) && new_rid != DOMAIN_RID_READONLY_DCS) {
+		ldb_asprintf_errstring(ldb,
+			"%08X: samldb: UF_PARTIAL_SECRETS_ACCOUNT requires "
+			"primaryGroupID=%u!",
+			W_ERROR_V(WERR_DS_CANT_MOD_PRIMARYGROUPID),
+			DOMAIN_RID_READONLY_DCS);
+		return LDB_ERR_UNWILLING_TO_PERFORM;
 	}
 
 	ret = dsdb_module_search(ac->module, ac, &group_res,
@@ -1449,6 +1436,110 @@ static int samldb_prim_group_trigger(struct samldb_ctx *ac)
 		ret = samldb_prim_group_change(ac);
 	}
 
+	return ret;
+}
+
+static int samldb_check_user_account_control_invariants(struct samldb_ctx *ac,
+						    uint32_t user_account_control)
+{
+	int i, ret = 0;
+	bool need_check = false;
+	const struct uac_to_guid {
+		uint32_t uac;
+		bool never;
+		uint32_t needs;
+		uint32_t not_with;
+		const char *error_string;
+	} map[] = {
+		{
+			.uac = UF_TEMP_DUPLICATE_ACCOUNT,
+			.never = true,
+			.error_string = "Updating the UF_TEMP_DUPLICATE_ACCOUNT flag is never allowed"
+		},
+		{
+			.uac = UF_PARTIAL_SECRETS_ACCOUNT,
+			.needs = UF_WORKSTATION_TRUST_ACCOUNT,
+			.error_string = "Setting UF_PARTIAL_SECRETS_ACCOUNT only permitted with UF_WORKSTATION_TRUST_ACCOUNT"
+		},
+		{
+			.uac = UF_TRUSTED_FOR_DELEGATION,
+			.not_with = UF_PARTIAL_SECRETS_ACCOUNT,
+			.error_string = "Setting UF_TRUSTED_FOR_DELEGATION not allowed with UF_PARTIAL_SECRETS_ACCOUNT"
+		},
+		{
+			.uac = UF_NORMAL_ACCOUNT,
+			.not_with = UF_ACCOUNT_TYPE_MASK & ~UF_NORMAL_ACCOUNT,
+			.error_string = "Setting more than one account type not permitted"
+		},
+		{
+			.uac = UF_WORKSTATION_TRUST_ACCOUNT,
+			.not_with = UF_ACCOUNT_TYPE_MASK & ~UF_WORKSTATION_TRUST_ACCOUNT,
+			.error_string = "Setting more than one account type not permitted"
+		},
+		{
+			.uac = UF_INTERDOMAIN_TRUST_ACCOUNT,
+			.not_with = UF_ACCOUNT_TYPE_MASK & ~UF_INTERDOMAIN_TRUST_ACCOUNT,
+			.error_string = "Setting more than one account type not permitted"
+		},
+		{
+			.uac = UF_SERVER_TRUST_ACCOUNT,
+			.not_with = UF_ACCOUNT_TYPE_MASK & ~UF_SERVER_TRUST_ACCOUNT,
+			.error_string = "Setting more than one account type not permitted"
+		},
+		{
+			.uac = UF_TRUSTED_FOR_DELEGATION,
+			.not_with = UF_PARTIAL_SECRETS_ACCOUNT,
+			.error_string = "Setting UF_TRUSTED_FOR_DELEGATION not allowed with UF_PARTIAL_SECRETS_ACCOUNT"
+		}
+	};
+
+	for (i = 0; i < ARRAY_SIZE(map); i++) {
+		if (user_account_control & map[i].uac) {
+			need_check = true;
+			break;
+		}
+	}
+	if (need_check == false) {
+		return LDB_SUCCESS;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(map); i++) {
+		uint32_t this_uac = user_account_control & map[i].uac;
+		if (this_uac != 0) {
+			if (map[i].never) {
+				ret = LDB_ERR_OTHER;
+				break;
+			} else if (map[i].needs != 0) {
+				if ((map[i].needs & user_account_control) == 0) {
+					ret = LDB_ERR_OTHER;
+					break;
+				}
+			} else if (map[i].not_with != 0) {
+				if ((map[i].not_with & user_account_control) != 0) {
+					ret = LDB_ERR_OTHER;
+					break;
+				}
+			}
+		}
+	}
+	if (ret != LDB_SUCCESS) {
+		switch (ac->req->operation) {
+		case LDB_ADD:
+			ldb_asprintf_errstring(ldb_module_get_ctx(ac->module),
+					       "Failed to add %s: %s",
+					       ldb_dn_get_linearized(ac->msg->dn),
+					       map[i].error_string);
+			break;
+		case LDB_MODIFY:
+			ldb_asprintf_errstring(ldb_module_get_ctx(ac->module),
+					       "Failed to modify %s: %s",
+					       ldb_dn_get_linearized(ac->msg->dn),
+					       map[i].error_string);
+			break;
+		default:
+			return ldb_module_operr(ac->module);
+		}
+	}
 	return ret;
 }
 
@@ -1639,6 +1730,24 @@ static int samldb_check_user_account_control_acl(struct samldb_ctx *ac,
 	return ret;
 }
 
+static int samldb_check_user_account_control_rules(struct samldb_ctx *ac,
+						   struct dom_sid *sid,
+						   uint32_t user_account_control,
+						   uint32_t user_account_control_old)
+{
+	int ret;
+	ret = samldb_check_user_account_control_invariants(ac, user_account_control);
+	if (ret != LDB_SUCCESS) {
+		return ret;
+	}
+	ret = samldb_check_user_account_control_acl(ac, sid, user_account_control, user_account_control_old);
+	if (ret != LDB_SUCCESS) {
+		return ret;
+	}
+	return ret;
+}
+
+
 /**
  * This function is called on LDB modify operations. It performs some additions/
  * replaces on the current LDB message when "userAccountControl" changes.
@@ -1651,9 +1760,8 @@ static int samldb_user_account_control_change(struct samldb_ctx *ac)
 	uint32_t raw_uac;
 	uint32_t old_ufa;
 	uint32_t new_ufa;
-	uint32_t old_acb;
-	uint32_t new_acb;
-	uint32_t clear_acb;
+	uint32_t old_uac_computed;
+	uint32_t clear_uac;
 	uint32_t old_atype;
 	uint32_t new_atype;
 	uint32_t old_pgrid;
@@ -1700,15 +1808,19 @@ static int samldb_user_account_control_change(struct samldb_ctx *ac)
 	raw_uac = ldb_msg_find_attr_as_uint(tmp_msg,
 					    "userAccountControl",
 					    0);
-	new_acb = samdb_result_acct_flags(tmp_msg, NULL);
 	talloc_free(tmp_msg);
 	/*
-	 * UF_LOCKOUT and UF_PASSWORD_EXPIRED are only generated
-	 * and not stored. We ignore them almost completely.
+	 * UF_LOCKOUT, UF_PASSWD_CANT_CHANGE and UF_PASSWORD_EXPIRED
+	 * are only generated and not stored. We ignore them almost
+	 * completely, along with unknown bits and UF_SCRIPT.
 	 *
-	 * The only exception is the resulting ACB_AUTOLOCK in clear_acb.
+	 * The only exception is ACB_AUTOLOCK, which features in
+	 * clear_acb when the bit is cleared in this modify operation.
+	 *
+	 * MS-SAMR 2.2.1.13 UF_FLAG Codes states that some bits are
+	 * ignored by clients and servers
 	 */
-	new_uac = raw_uac & ~(UF_LOCKOUT|UF_PASSWORD_EXPIRED);
+	new_uac = raw_uac & UF_SETTABLE_BITS;
 
 	/* Fetch the old "userAccountControl" and "objectClass" */
 	ret = dsdb_module_search_dn(ac->module, ac, &res, ac->msg->dn, attrs,
@@ -1720,13 +1832,13 @@ static int samldb_user_account_control_change(struct samldb_ctx *ac)
 	if (old_uac == 0) {
 		return ldb_operr(ldb);
 	}
-	old_acb = samdb_result_acct_flags(res->msgs[0],
-					  "msDS-User-Account-Control-Computed");
+	old_uac_computed = ldb_msg_find_attr_as_uint(res->msgs[0],
+						     "msDS-User-Account-Control-Computed", 0);
 	old_lockoutTime = ldb_msg_find_attr_as_int64(res->msgs[0],
 						     "lockoutTime", 0);
 	old_is_critical = ldb_msg_find_attr_as_bool(res->msgs[0],
 						    "isCriticalSystemObject", 0);
-	/* When we do not have objectclass "omputer" we cannot switch to a (read-only) DC */
+	/* When we do not have objectclass "computer" we cannot switch to a (read-only) DC */
 	el = ldb_msg_find_element(res->msgs[0], "objectClass");
 	if (el == NULL) {
 		return ldb_operr(ldb);
@@ -1744,16 +1856,27 @@ static int samldb_user_account_control_change(struct samldb_ctx *ac)
 	new_ufa = new_uac & UF_ACCOUNT_TYPE_MASK;
 	if (new_ufa == 0) {
 		/*
-		 * When there is no account type embedded in "userAccountControl"
-		 * fall back to the old.
+		 * "userAccountControl" = 0 or missing one of the
+		 * types means "UF_NORMAL_ACCOUNT".  See MS-SAMR
+		 * 3.1.1.8.10 point 8
 		 */
-		new_ufa = old_ufa;
+		new_ufa = UF_NORMAL_ACCOUNT;
 		new_uac |= new_ufa;
 	}
+	sid = samdb_result_dom_sid(res, res->msgs[0], "objectSid");
+	if (sid == NULL) {
+		return ldb_module_operr(ac->module);
+	}
+
+	ret = samldb_check_user_account_control_rules(ac, sid, new_uac, old_uac);
+	if (ret != LDB_SUCCESS) {
+		return ret;
+	}
+
 	new_atype = ds_uf2atype(new_ufa);
 	new_pgrid = ds_uf2prim_group_rid(new_uac);
 
-	clear_acb = old_acb & ~new_acb;
+	clear_uac = (old_uac | old_uac_computed) & ~raw_uac;
 
 	switch (new_ufa) {
 	case UF_NORMAL_ACCOUNT:
@@ -1766,17 +1889,16 @@ static int samldb_user_account_control_change(struct samldb_ctx *ac)
 
 	case UF_WORKSTATION_TRUST_ACCOUNT:
 		new_is_critical = false;
-		break;
-
-	case (UF_WORKSTATION_TRUST_ACCOUNT|UF_PARTIAL_SECRETS_ACCOUNT):
-		if (!is_computer) {
-			ldb_asprintf_errstring(ldb,
-				"%08X: samldb: UF_PARTIAL_SECRETS_ACCOUNT "
-				"requires objectclass 'computer'!",
-				W_ERROR_V(WERR_DS_MACHINE_ACCOUNT_CREATED_PRENT4));
-			return LDB_ERR_UNWILLING_TO_PERFORM;
+		if (new_uac & UF_PARTIAL_SECRETS_ACCOUNT) {
+			if (!is_computer) {
+				ldb_asprintf_errstring(ldb,
+						       "%08X: samldb: UF_PARTIAL_SECRETS_ACCOUNT "
+						       "requires objectclass 'computer'!",
+						       W_ERROR_V(WERR_DS_MACHINE_ACCOUNT_CREATED_PRENT4));
+				return LDB_ERR_UNWILLING_TO_PERFORM;
+			}
+			new_is_critical = true;
 		}
-		new_is_critical = true;
 		break;
 
 	case UF_SERVER_TRUST_ACCOUNT:
@@ -1808,7 +1930,7 @@ static int samldb_user_account_control_change(struct samldb_ctx *ac)
 	}
 
 	/* As per MS-SAMR 3.1.1.8.10 these flags have not to be set */
-	if ((clear_acb & ACB_AUTOLOCK) && (old_lockoutTime != 0)) {
+	if ((clear_uac & UF_LOCKOUT) && (old_lockoutTime != 0)) {
 		/* "pwdLastSet" reset as password expiration has been forced  */
 		ldb_msg_remove_attr(ac->msg, "lockoutTime");
 		ret = samdb_msg_add_uint64(ldb, ac->msg, ac->msg, "lockoutTime",
@@ -2407,7 +2529,8 @@ static int samldb_service_principal_names_change(struct samldb_ctx *ac)
 		}
 
 		for (i = 0; i < res->msgs[0]->elements[0].num_values; i++) {
-			char *old_str, *new_str, *pos;
+			char *old_str, *new_str;
+			char *pos = NULL;
 			const char *tok;
 			struct ldb_val *vals;
 			bool found = false;
@@ -2532,6 +2655,270 @@ static int samldb_fsmo_role_owner_check(struct samldb_ctx *ac)
 	return LDB_SUCCESS;
 }
 
+/*
+ * Return zero if the number of zero bits in the address (looking from low to
+ * high) is equal to or greater than the length minus the mask. Otherwise it
+ * returns -1.
+ */
+static int check_cidr_zero_bits(uint8_t *address, unsigned int len,
+				unsigned int mask)
+{
+	/* <address> is an integer in big-endian form, <len> bits long. All
+	   bits between <mask> and <len> must be zero. */
+	int i;
+	unsigned int byte_len;
+	unsigned int byte_mask;
+	unsigned int bit_mask;
+	if (len == 32) {
+		DBG_INFO("Looking at address %02x%02x%02x%02x, mask %u\n",
+			 address[0], address[1], address[2], address[3],
+			  mask);
+	} else if (len == 128){
+		DBG_INFO("Looking at address "
+			 "%02x%02x-%02x%02x-%02x%02x-%02x%02x-"
+			 "%02x%02x-%02x%02x-%02x%02x-%02x%02x, mask %u\n",
+			 address[0], address[1], address[2], address[3],
+			 address[4], address[5], address[6], address[7],
+			 address[8], address[9], address[10], address[11],
+			 address[12], address[13], address[14], address[15],
+			 mask);
+	}
+
+	if (mask > len){
+		DBG_INFO("mask %u is too big (> %u)\n", mask, len);
+		return -1;
+	}
+	if (mask == len){
+		/* single address subnet.
+		 * In IPv4 all 255s is invalid by the bitmask != address rule
+		 * in MS-ADTS. IPv6 does not suffer.
+		 */
+		if (len == 32){
+			if (address[0] == 255 &&
+			    address[1] == 255 &&
+			    address[2] == 255 &&
+			    address[3] == 255){
+				return -1;
+			}
+		}
+		return 0;
+	}
+
+	byte_len = len / 8;
+	byte_mask = mask / 8;
+
+	for (i = byte_len - 1; i > byte_mask; i--){
+		DBG_DEBUG("checking byte %d %02x\n", i, address[i]);
+		if (address[i] != 0){
+			return -1;
+		}
+	}
+	bit_mask = (1 << (8 - (mask & 7))) - 1;
+	DBG_DEBUG("checking bitmask %02x & %02x overlap %02x\n", bit_mask, address[byte_mask],
+		  bit_mask & address[byte_mask]);
+	if (address[byte_mask] & bit_mask){
+		return -1;
+	}
+
+	/* According to MS-ADTS, the mask can't exactly equal the bitmask for
+	 * IPv4 (but this is fine for v6). That is 255.255.80.0/17 is bad,
+	 * because the bitmask implied by "/17" is 255.255.80.0.
+	 *
+	 * The bit_mask used in the previous check is the complement of what
+	 * we want here.
+	 */
+	if (len == 32 && address[byte_mask] == (uint8_t)~bit_mask){
+		bool ok = false;
+		for (i = 0; i < byte_mask; i++){
+			if (address[i] != 255){
+				ok = true;
+				break;
+			}
+		}
+		if (ok == false){
+			return -1;
+		}
+	}
+	return 0;
+}
+
+
+
+static int check_address_roundtrip(const char *address, int family,
+				   const uint8_t *address_bytes,
+				   char *buffer, int buffer_len)
+{
+	/*
+	 * Check that the address is in the canonical RFC5952 format for IPv6,
+	 * and lacks extra leading zeros for each dotted decimal for IPv4.
+	 * Handily this is what inet_ntop() gives you.
+	 */
+	const char *address_redux = inet_ntop(family, address_bytes,
+					      buffer, buffer_len);
+	if (address_redux == NULL){
+		DBG_INFO("Address round trip %s failed unexpectedly"
+			 " with errno %d\n", address, errno);
+		return -1;
+	}
+	if (strcasecmp(address, address_redux) != 0){
+		DBG_INFO("Address %s round trips to %s; fail!\n",
+			 address, address_redux);
+		/* If the address family is IPv6, and the address is in a
+		   certain range
+
+		 */
+		if (strchr(address_redux, '.') != NULL){
+			DEBUG(0, ("The IPv6 address '%s' has the misfortune of "
+				  "lying in a range that was once used for "
+				  "IPv4 embedding (that is, it might also be "
+				  "represented as '%s').\n", address,
+				  address_redux));
+		}
+		return -1;
+	}
+	return 0;
+}
+
+
+
+/*
+ * MS-ADTS v20150630 6.1.1.2.2.2.1 Subnet Object, refers to RFC1166 and
+ * RFC2373. It specifies something seemingly indistinguishable from an RFC4632
+ * CIDR address range without saying so explicitly. Here we follow the CIDR
+ * spec.
+ *
+ * Return 0 on success, -1 on error.
+ */
+static int verify_cidr(const char *cidr)
+{
+	char *address = NULL, *slash = NULL, *endptr = NULL;
+	bool has_colon, has_dot;
+	int res, ret;
+	unsigned long mask;
+	uint8_t *address_bytes = NULL;
+	char *address_redux = NULL;
+	unsigned int address_len;
+	TALLOC_CTX *frame = NULL;
+
+	DBG_DEBUG("CIDR is %s\n", cidr);
+	frame = talloc_stackframe();
+	address = talloc_strdup(frame, cidr);
+	if (address == NULL){
+		goto error;
+	}
+
+	/* there must be a '/' */
+	slash = strchr(address, '/');
+	if (slash == NULL){
+		goto error;
+	}
+	/* terminate the address for strchr, inet_pton */
+	*slash = '\0';
+
+	mask = strtoul(slash + 1, &endptr, 10);
+	if (mask == 0){
+		DBG_INFO("Windows does not like the zero mask, "
+			 "so nor do we: %s\n", cidr);
+		goto error;
+	}
+
+	if (*endptr != '\0' || endptr == slash + 1){
+		DBG_INFO("CIDR mask is not a proper integer: %s\n", cidr);
+		goto error;
+	}
+
+	address_bytes = talloc_size(frame, sizeof(struct in6_addr));
+	if (address_bytes == NULL){
+		goto error;
+	}
+
+	address_redux = talloc_size(frame, INET6_ADDRSTRLEN);
+	if (address_redux == NULL){
+		goto error;
+	}
+
+	DBG_INFO("found address %s, mask %lu\n", address, mask);
+	has_colon = (strchr(address, ':') == NULL) ? false : true;
+	has_dot = (strchr(address, '.') == NULL) ? false : true;
+	if (has_dot && has_colon){
+		/* This seems to be an IPv4 address embedded in IPv6, which is
+		   icky. We don't support it. */
+		DBG_INFO("Refusing to consider cidr '%s' with dots and colons\n",
+			  cidr);
+		goto error;
+	} else if (has_colon){	/* looks like IPv6 */
+		res = inet_pton(AF_INET6, address, address_bytes);
+		if (res != 1) {
+			DBG_INFO("Address in %s fails to parse as IPv6\n", cidr);
+			goto error;
+		}
+		address_len = 128;
+		if (check_address_roundtrip(address, AF_INET6, address_bytes,
+					    address_redux, INET6_ADDRSTRLEN)){
+			goto error;
+		}
+	} else if (has_dot) {
+		/* looks like IPv4 */
+		if (strcmp(address, "0.0.0.0") == 0){
+			DBG_INFO("Windows does not like the zero IPv4 address, "
+				 "so nor do we.\n");
+			goto error;
+		}
+		res = inet_pton(AF_INET, address, address_bytes);
+		if (res != 1) {
+			DBG_INFO("Address in %s fails to parse as IPv4\n", cidr);
+			goto error;
+		}
+		address_len = 32;
+
+		if (check_address_roundtrip(address, AF_INET, address_bytes,
+					    address_redux, INET_ADDRSTRLEN)){
+			goto error;
+		}
+	} else {
+		/* This doesn't look like an IP address at all. */
+		goto error;
+	}
+
+	ret = check_cidr_zero_bits(address_bytes, address_len, mask);
+	talloc_free(frame);
+	return ret;
+  error:
+	talloc_free(frame);
+	return -1;
+}
+
+
+static int samldb_verify_subnet(struct samldb_ctx *ac)
+{
+	struct ldb_context *ldb = ldb_module_get_ctx(ac->module);
+	const char *cidr = NULL;
+	const struct ldb_val *rdn_value = NULL;
+
+	rdn_value = ldb_dn_get_rdn_val(ac->msg->dn);
+	if (rdn_value == NULL) {
+		ldb_set_errstring(ldb, "samldb: ldb_dn_get_rdn_val "
+				  "failed");
+		return LDB_ERR_UNWILLING_TO_PERFORM;
+	}
+
+	cidr = ldb_dn_escape_value(ac, *rdn_value);
+	DBG_INFO("looking at cidr '%s'\n", cidr);
+	if (cidr == NULL) {
+		ldb_set_errstring(ldb,
+				  "samldb: adding an empty subnet cidr seems wrong");
+		return LDB_ERR_UNWILLING_TO_PERFORM;
+	}
+
+	if (verify_cidr(cidr)){
+		ldb_set_errstring(ldb,
+				  "samldb: subnet value is invalid");
+		return LDB_ERR_INVALID_DN_SYNTAX;
+	}
+
+	return LDB_SUCCESS;
+}
+
 
 /* add */
 static int samldb_add(struct ldb_module *module, struct ldb_request *req)
@@ -2640,6 +3027,17 @@ static int samldb_add(struct ldb_module *module, struct ldb_request *req)
 		return samldb_fill_object(ac);
 	}
 
+	if (samdb_find_attribute(ldb, ac->msg,
+				 "objectclass", "subnet") != NULL) {
+		ret = samldb_verify_subnet(ac);
+		if (ret != LDB_SUCCESS) {
+			talloc_free(ac);
+			return ret;
+		}
+		/* We are just checking the value is valid, and there are no
+		   values to fill in. */
+	}
+
 	talloc_free(ac);
 
 	/* nothing matched, go on */
@@ -2652,6 +3050,7 @@ static int samldb_modify(struct ldb_module *module, struct ldb_request *req)
 	struct ldb_context *ldb;
 	struct samldb_ctx *ac;
 	struct ldb_message_element *el, *el2;
+	struct ldb_control *is_undelete;
 	bool modified = false;
 	int ret;
 
@@ -2662,6 +3061,13 @@ static int samldb_modify(struct ldb_module *module, struct ldb_request *req)
 
 	ldb = ldb_module_get_ctx(module);
 
+	/*
+	 * we are going to need some special handling if in Undelete call.
+	 * Since tombstone_reanimate module will restore certain attributes,
+	 * we need to relax checks for: sAMAccountType, primaryGroupID
+	 */
+	is_undelete = ldb_request_get_control(req, DSDB_CONTROL_RESTORE_TOMBSTONE_OID);
+
 	/* make sure that "objectSid" is not specified */
 	el = ldb_msg_find_element(req->op.mod.message, "objectSid");
 	if (el != NULL) {
@@ -2671,12 +3077,14 @@ static int samldb_modify(struct ldb_module *module, struct ldb_request *req)
 			return LDB_ERR_UNWILLING_TO_PERFORM;
 		}
 	}
-	/* make sure that "sAMAccountType" is not specified */
-	el = ldb_msg_find_element(req->op.mod.message, "sAMAccountType");
-	if (el != NULL) {
-		ldb_set_errstring(ldb,
-				  "samldb: sAMAccountType must not be specified!");
-		return LDB_ERR_UNWILLING_TO_PERFORM;
+	if (is_undelete == NULL) {
+		/* make sure that "sAMAccountType" is not specified */
+		el = ldb_msg_find_element(req->op.mod.message, "sAMAccountType");
+		if (el != NULL) {
+			ldb_set_errstring(ldb,
+					  "samldb: sAMAccountType must not be specified!");
+			return LDB_ERR_UNWILLING_TO_PERFORM;
+		}
 	}
 	/* make sure that "isCriticalSystemObject" is not specified */
 	el = ldb_msg_find_element(req->op.mod.message, "isCriticalSystemObject");
@@ -2720,11 +3128,13 @@ static int samldb_modify(struct ldb_module *module, struct ldb_request *req)
 		return ldb_operr(ldb);
 	}
 
-	el = ldb_msg_find_element(ac->msg, "primaryGroupID");
-	if (el != NULL) {
-		ret = samldb_prim_group_trigger(ac);
-		if (ret != LDB_SUCCESS) {
-			return ret;
+	if (is_undelete == NULL) {
+		el = ldb_msg_find_element(ac->msg, "primaryGroupID");
+		if (el != NULL) {
+			ret = samldb_prim_group_trigger(ac);
+			if (ret != LDB_SUCCESS) {
+				return ret;
+			}
 		}
 	}
 
@@ -2932,8 +3342,16 @@ static int check_rename_constraints(struct ldb_message *msg,
 	if (ldb_request_get_control(ac->req, LDB_CONTROL_RELAX_OID) != NULL) {
 		return LDB_SUCCESS;
 	}
+
 	if (ldb_msg_find_attr_as_bool(msg, "isDeleted", false)) {
-		return LDB_SUCCESS;
+		/*
+		 * check originating request if we are supposed
+		 * to "see" this record in first place.
+		 */
+		if (ldb_request_get_control(ac->req, LDB_CONTROL_SHOW_DELETED_OID) == NULL) {
+			return LDB_ERR_NO_SUCH_OBJECT;
+		}
+		return LDB_ERR_UNWILLING_TO_PERFORM;
 	}
 
 	/* Objects under CN=System */
@@ -2965,6 +3383,15 @@ static int check_rename_constraints(struct ldb_message *msg,
 				       "subtree_rename: Cannot move/rename %s. It's an LSA-specific object!",
 				       ldb_dn_get_linearized(olddn));
 		return LDB_ERR_UNWILLING_TO_PERFORM;
+	}
+
+	/* subnet objects */
+	if (samdb_find_attribute(ldb, msg, "objectclass", "subnet") != NULL) {
+		ret = samldb_verify_subnet(ac);
+		if (ret != LDB_SUCCESS) {
+			talloc_free(ac);
+			return ret;
+		}
 	}
 
 	/* systemFlags */
@@ -3031,7 +3458,8 @@ static int check_rename_constraints(struct ldb_message *msg,
 				talloc_free(dn2);
 			}
 
-			if (!limited_move) {
+			if (!limited_move
+			    && ldb_request_get_control(ac->req, DSDB_CONTROL_RESTORE_TOMBSTONE_OID) == NULL) {
 				ldb_asprintf_errstring(ldb,
 						       "subtree_rename: Cannot move %s to %s in config partition",
 						       ldb_dn_get_linearized(olddn), ldb_dn_get_linearized(newdn));

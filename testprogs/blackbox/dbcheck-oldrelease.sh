@@ -20,6 +20,11 @@ if [ -x "$BINDIR/ldbmodify" ]; then
     ldbmodify="$BINDIR/ldbmodify"
 fi
 
+ldbsearch="ldbsearch"
+if [ -x "$BINDIR/ldbsearch" ]; then
+    ldbsearch="$BINDIR/ldbsearch"
+fi
+
 undump() {
        if test -x $BINDIR/tdbrestore;
        then
@@ -136,10 +141,105 @@ reindex() {
        $PYTHON $BINDIR/samba-tool dbcheck --reindex -H tdb://$PREFIX_ABS/${RELEASE}/private/sam.ldb $@
 }
 
+do_current_version_mod() {
+    if [ x$RELEASE = x"release-4-1-0rc3" ]; then
+	# Confirm (in combination with the ldbsearch below) that
+	# changing the attribute with current Samba fixes it, and that
+	# a fixed attriute isn't unfixed by dbcheck.
+	tmpldif=$release_dir/sudoers2-mod.ldif
+	$ldbmodify -H tdb://$PREFIX_ABS/${RELEASE}/private/sam.ldb $tmpldif
+    fi
+    return 0
+}
+
+check_expected_before_values() {
+    if [ x$RELEASE = x"release-4-1-0rc3" ]; then
+	tmpldif=$PREFIX_ABS/$RELEASE/expected-replpropertymetadata-before-dbcheck.ldif.tmp
+	TZ=UTC $ldbsearch -H tdb://$PREFIX_ABS/${RELEASE}/private/sam.ldb cn=ops_run_anything -s one -b OU=SUDOers,DC=release-4-1-0rc3,DC=samba,DC=corp \* replpropertymetadata --sorted --show-binary > $tmpldif
+	diff $tmpldif $release_dir/expected-replpropertymetadata-before-dbcheck.ldif
+	if [ "$?" != "0" ]; then
+	    return 1
+	fi
+
+	TZ=UTC $ldbsearch -H tdb://$PREFIX_ABS/${RELEASE}/private/sam.ldb cn=ops_run_anything2 -s one -b OU=SUDOers,DC=release-4-1-0rc3,DC=samba,DC=corp \* replpropertymetadata --sorted --show-binary | grep -v originating_change_time| grep -v whenChanged > $tmpldif
+
+	# Here we remove originating_change_time and whenChanged as
+	# these are time-dependent, caused by the ldbmodify above.
+
+	diff $tmpldif $release_dir/expected-replpropertymetadata-before-dbcheck2.ldif
+	if [ "$?" != "0" ]; then
+	    return 1
+	fi
+
+	TZ=UTC $ldbsearch -H tdb://$PREFIX_ABS/${RELEASE}/private/sam.ldb cn=ops_run_anything3 -s one -b OU=SUDOers,DC=release-4-1-0rc3,DC=samba,DC=corp \* replpropertymetadata --sorted --show-binary > $tmpldif
+	diff $tmpldif $release_dir/expected-replpropertymetadata-before-dbcheck3.ldif
+	if [ "$?" != "0" ]; then
+	    return 1
+	fi
+    fi
+    return 0
+}
+
 # This should 'fail', because it returns the number of modified records
 dbcheck() {
        $PYTHON $BINDIR/samba-tool dbcheck --cross-ncs --fix --yes -H tdb://$PREFIX_ABS/${RELEASE}/private/sam.ldb $@
 }
+
+check_expected_after_values() {
+    if [ x$RELEASE = x"release-4-1-0rc3" ]; then
+	tmpldif=$PREFIX_ABS/$RELEASE/expected-replpropertymetadata-before-dbcheck.ldif.tmp
+	TZ=UTC $ldbsearch -H tdb://$PREFIX_ABS/${RELEASE}/private/sam.ldb cn=ops_run_anything -s one -b OU=SUDOers,DC=release-4-1-0rc3,DC=samba,DC=corp \* replpropertymetadata --sorted --show-binary > $tmpldif
+	diff $tmpldif $release_dir/expected-replpropertymetadata-after-dbcheck.ldif
+	if [ "$?" != "0" ]; then
+	    return 1
+	fi
+	TZ=UTC $ldbsearch -H tdb://$PREFIX_ABS/${RELEASE}/private/sam.ldb cn=ops_run_anything2 -s one -b OU=SUDOers,DC=release-4-1-0rc3,DC=samba,DC=corp \* replpropertymetadata --sorted --show-binary | grep -v originating_change_time| grep -v whenChanged > $tmpldif
+	diff $tmpldif $release_dir/expected-replpropertymetadata-after-dbcheck2.ldif
+	if [ "$?" != "0" ]; then
+	    return 1
+	fi
+	TZ=UTC $ldbsearch -H tdb://$PREFIX_ABS/${RELEASE}/private/sam.ldb cn=ops_run_anything3 -s one -b OU=SUDOers,DC=release-4-1-0rc3,DC=samba,DC=corp \* replpropertymetadata --sorted --show-binary > $tmpldif
+	diff $tmpldif $release_dir/expected-replpropertymetadata-after-dbcheck3.ldif
+	if [ "$?" != "0" ]; then
+	    return 1
+	fi
+    fi
+    return 0
+}
+
+check_forced_duplicate_values() {
+    if [ x$RELEASE = x"release-4-1-0rc3" ]; then
+	ldif=$release_dir/forced-duplicate-value-for-dbcheck.ldif
+	TZ=UTC $ldbmodify -H tdb://$PREFIX_ABS/${RELEASE}/private/sam.ldb.d/DC%3DRELEASE-4-1-0RC3,DC%3DSAMBA,DC%3DCORP.ldb $ldif
+	if [ "$?" != "0" ]; then
+	    return 1
+	fi
+    else
+	return 0
+    fi
+}
+
+# This should 'fail', because it returns the number of modified records
+dbcheck_after_dup() {
+    if [ x$RELEASE = x"release-4-1-0rc3" ]; then
+	$PYTHON $BINDIR/samba-tool dbcheck --cross-ncs --fix --yes -H tdb://$PREFIX_ABS/${RELEASE}/private/sam.ldb $@
+    else
+	return 1
+    fi
+}
+
+check_expected_after_dup_values() {
+    if [ x$RELEASE = x"release-4-1-0rc3" ]; then
+	tmpldif=$PREFIX_ABS/$RELEASE/expected-otherphone-after-dbcheck.ldif.tmp
+	TZ=UTC $ldbsearch -H tdb://$PREFIX_ABS/${RELEASE}/private/sam.ldb cn=administrator -s base -b cn=administrator,cn=users,DC=release-4-1-0rc3,DC=samba,DC=corp otherHomePhone --sorted --show-binary | grep -v \# | sort > $tmpldif
+	diff $tmpldif $release_dir/expected-otherphone-after-dbcheck.ldif
+	if [ "$?" != "0" ]; then
+	    return 1
+	fi
+    fi
+    return 0
+}
+
 # But having fixed it all up, this should pass
 dbcheck_clean() {
        $PYTHON $BINDIR/samba-tool dbcheck --cross-ncs -H tdb://$PREFIX_ABS/${RELEASE}/private/sam.ldb $@
@@ -179,7 +279,7 @@ dbcheck_clean2() {
 
 referenceprovision() {
     if [ x$RELEASE == x"release-4-0-0" ]; then
-        $PYTHON $BINDIR/samba-tool domain provision --server-role="dc" --domain=SAMBA --host-name=ares --realm=${RELEASE}.samba.corp --targetdir=$PREFIX_ABS/${RELEASE}_reference --use-ntvfs --host-ip=127.0.0.1 --host-ip6=::1
+        $PYTHON $BINDIR/samba-tool domain provision --server-role="dc" --domain=SAMBA --host-name=ares --realm=${RELEASE}.samba.corp --targetdir=$PREFIX_ABS/${RELEASE}_reference --use-ntvfs --host-ip=127.0.0.1 --host-ip6=::1 --function-level=2003
     fi
 }
 
@@ -198,7 +298,13 @@ ldapcmp_sd() {
 if [ -d $release_dir ]; then
     testit $RELEASE undump
     testit "reindex" reindex
+    testit "current_version_mod" do_current_version_mod
+    testit "check_expected_before_values" check_expected_before_values
     testit_expect_failure "dbcheck" dbcheck
+    testit "check_expected_after_values" check_expected_after_values
+    testit "check_forced_duplicate_values" check_forced_duplicate_values
+    testit_expect_failure "dbcheck_after_dup" dbcheck_after_dup
+    testit "check_expected_after_dup_values" check_expected_after_dup_values
     testit "dbcheck_clean" dbcheck_clean
     testit_expect_failure "dbcheck_acl_reset" dbcheck_acl_reset
     testit "dbcheck_acl_reset_clean" dbcheck_acl_reset_clean
@@ -221,12 +327,20 @@ EOF
     subunit_skip_test "reindex" <<EOF
 no test provision
 EOF
+    subunit_start_test check_expected_before_values
+    subunit_skip_test check_expected_before_values<<EOF
+no test provision
+EOF
     subunit_start_test "dbcheck"
     subunit_skip_test "dbcheck" <<EOF
 no test provision
 EOF
     subunit_start_test "dbcheck_clean"
     subunit_skip_test "dbcheck_clean" <<EOF
+no test provision
+EOF
+    subunit_start_test check_expected_after_values
+    subunit_skip_test check_expected_after_values<<EOF
 no test provision
 EOF
     subunit_start_test "dbcheck_acl_reset"
@@ -257,6 +371,11 @@ EOF
 no test provision
 EOF
 
+    subunit_start_test check_expected_before_values
+    subunit_skip_test check_expected_before_values<<EOF
+no test provision
+EOF
+
     subunit_start_test "dbcheck2"
     subunit_skip_test "dbcheck2" <<EOF
 no test provision
@@ -277,7 +396,7 @@ EOF
 fi
 
 if [ -d $PREFIX_ABS/${RELEASE} ]; then
-  rm -fr $PREFIX_ABS/${RELEASE}
+    rm -fr $PREFIX_ABS/${RELEASE}
 fi
 
 if [ -d $PREFIX_ABS/${RELEASE}_reference ]; then

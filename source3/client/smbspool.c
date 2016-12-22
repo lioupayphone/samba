@@ -151,7 +151,14 @@ main(int argc,			/* I - Number of command-line arguments */
 		perror("ERROR: Unable to open print file");
 		goto done;
 	} else {
-		copies = atoi(argv[4]);
+		char *p = argv[4];
+		char *endp;
+
+		copies = strtol(p, &endp, 10);
+		if (p == endp) {
+			perror("ERROR: Unable to determine number of copies");
+			goto done;
+		}
 	}
 
 	/*
@@ -243,9 +250,9 @@ main(int argc,			/* I - Number of command-line arguments */
          * Setup the SAMBA server state...
          */
 
-	setup_logging("smbspool", DEBUG_STDOUT);
+	setup_logging("smbspool", DEBUG_STDERR);
 
-	load_case_tables();
+	smb_init_locale();
 
 	if (!lp_load_client(get_dyn_CONFIGFILE())) {
 		fprintf(stderr, "ERROR: Can't load %s - run testparm to debug it\n", get_dyn_CONFIGFILE());
@@ -339,8 +346,8 @@ get_exit_code(struct cli_state * cli,
 	};
 
 
-	fprintf(stderr, "DEBUG: get_exit_code(cli=%p, nt_status=%x)\n",
-		cli, NT_STATUS_V(nt_status));
+	fprintf(stderr, "DEBUG: get_exit_code(cli=%p, nt_status=%s [%x])\n",
+		cli, nt_errstr(nt_status), NT_STATUS_V(nt_status));
 
 	for (i = 0; i < ARRAY_SIZE(auth_errors); i++) {
 		if (!NT_STATUS_EQUAL(nt_status, auth_errors[i])) {

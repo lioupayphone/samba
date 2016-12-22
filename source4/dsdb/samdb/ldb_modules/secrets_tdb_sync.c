@@ -126,7 +126,7 @@ static int add_modified(struct ldb_module *module, struct ldb_dn *dn, bool do_de
 	item->do_delete = do_delete;
 	talloc_free(res);
 
-	DLIST_ADD_END(data->changed_dns, item, struct dn_list *);
+	DLIST_ADD_END(data->changed_dns, item);
 	return LDB_SUCCESS;
 }
 
@@ -475,8 +475,7 @@ static int secrets_tdb_sync_init(struct ldb_module *module)
 	struct ldb_context *ldb;
 	struct secrets_tdb_sync_private *data;
 	char *private_dir, *p;
-	const char *secrets_ldb, *secrets_ntdb;
-	bool use_ntdb;
+	const char *secrets_ldb;
 
 	ldb = ldb_module_get_ctx(module);
 
@@ -504,12 +503,7 @@ static int secrets_tdb_sync_init(struct ldb_module *module)
 		private_dir = talloc_strdup(data, ".");
 	}
 
-	/* If there's an ntdb file, force code to load that. */
-	secrets_ntdb = talloc_asprintf(private_dir, "%s/secrets.ntdb",
-				       private_dir);
-	use_ntdb = file_exist(secrets_ntdb);
-
-	secrets_init_path(private_dir, use_ntdb);
+	secrets_init_path(private_dir);
 
 	TALLOC_FREE(private_dir);
 

@@ -195,7 +195,7 @@ int run_rpc_command(struct net_context *c,
 			TALLOC_FREE(c->netlogon_creds);
 			nt_status = cli_rpc_pipe_open_schannel(
 				cli, c->msg_ctx, table, NCACN_NP,
-				DCERPC_AUTH_LEVEL_PRIVACY, domain_name,
+				domain_name,
 				&pipe_hnd, c, &c->netlogon_creds);
 			if (!NT_STATUS_IS_OK(nt_status)) {
 				DEBUG(0, ("Could not initialise schannel netlogon pipe. Error was %s\n",
@@ -208,6 +208,7 @@ int run_rpc_command(struct net_context *c,
 					cli, table,
 					(conn_flags & NET_FLAGS_TCP) ?
 					NCACN_IP_TCP : NCACN_NP,
+					CRED_DONT_USE_KERBEROS,
 					DCERPC_AUTH_TYPE_NTLMSSP,
 					DCERPC_AUTH_LEVEL_PRIVACY,
 					smbXcli_conn_remote_name(cli->conn),
@@ -427,6 +428,11 @@ static int net_rpc_oldjoin(struct net_context *c, int argc, const char **argv)
 			r->out.netbios_domain_name);
 	}
 
+	/* print out informative error string in case there is one */
+	if (r->out.error_string != NULL) {
+		d_printf("%s\n", r->out.error_string);
+	}
+
 	TALLOC_FREE(mem_ctx);
 
 	return 0;
@@ -604,6 +610,11 @@ static int net_rpc_join_newstyle(struct net_context *c, int argc, const char **a
 	} else {
 		d_printf("Joined '%s' to domain '%s'\n", r->in.machine_name,
 			r->out.netbios_domain_name);
+	}
+
+	/* print out informative error string in case there is one */
+	if (r->out.error_string != NULL) {
+		d_printf("%s\n", r->out.error_string);
 	}
 
 	TALLOC_FREE(mem_ctx);
@@ -1335,7 +1346,7 @@ static NTSTATUS rpc_sh_handle_user(struct net_context *c,
 	struct policy_handle connect_pol, domain_pol, user_pol;
 	NTSTATUS status, result;
 	struct dom_sid sid;
-	uint32 rid;
+	uint32_t rid;
 	enum lsa_SidType type;
 	struct dcerpc_binding_handle *b = pipe_hnd->binding_handle;
 
@@ -1589,7 +1600,7 @@ static NTSTATUS rpc_sh_user_flag_edit_internals(struct net_context *c,
 	NTSTATUS status, result;
 	const char *username;
 	const char *oldval = "unknown";
-	uint32 oldflags, newflags;
+	uint32_t oldflags, newflags;
 	bool newval;
 	union samr_UserInfo *info = NULL;
 	struct dcerpc_binding_handle *b = pipe_hnd->binding_handle;
@@ -2195,7 +2206,7 @@ static NTSTATUS rpc_add_groupmem(struct rpc_pipe_client *pipe_hnd,
 {
 	struct policy_handle connect_pol, domain_pol;
 	NTSTATUS status, result;
-	uint32 group_rid;
+	uint32_t group_rid;
 	struct policy_handle group_pol;
 	struct dcerpc_binding_handle *b = pipe_hnd->binding_handle;
 
@@ -2306,7 +2317,7 @@ static NTSTATUS rpc_add_aliasmem(struct rpc_pipe_client *pipe_hnd,
 {
 	struct policy_handle connect_pol, domain_pol;
 	NTSTATUS status, result;
-	uint32 alias_rid;
+	uint32_t alias_rid;
 	struct policy_handle alias_pol;
 	struct dcerpc_binding_handle *b = pipe_hnd->binding_handle;
 
@@ -2459,7 +2470,7 @@ static NTSTATUS rpc_del_groupmem(struct net_context *c,
 {
 	struct policy_handle connect_pol, domain_pol;
 	NTSTATUS status, result;
-	uint32 group_rid;
+	uint32_t group_rid;
 	struct policy_handle group_pol;
 	struct dcerpc_binding_handle *b = pipe_hnd->binding_handle;
 
@@ -2567,7 +2578,7 @@ static NTSTATUS rpc_del_aliasmem(struct rpc_pipe_client *pipe_hnd,
 {
 	struct policy_handle connect_pol, domain_pol;
 	NTSTATUS status, result;
-	uint32 alias_rid;
+	uint32_t alias_rid;
 	struct policy_handle alias_pol;
 	struct dcerpc_binding_handle *b = pipe_hnd->binding_handle;
 
@@ -2740,7 +2751,7 @@ static NTSTATUS rpc_group_list_internals(struct net_context *c,
 {
 	struct policy_handle connect_pol, domain_pol;
 	NTSTATUS status, result;
-	uint32 start_idx=0, max_entries=250, num_entries, i, loop_count = 0;
+	uint32_t start_idx=0, max_entries=250, num_entries, i, loop_count = 0;
 	struct samr_SamArray *groups = NULL;
 	bool global = false;
 	bool local = false;
@@ -3018,11 +3029,11 @@ static NTSTATUS rpc_list_group_members(struct net_context *c,
 					const char *domain_name,
 					const struct dom_sid *domain_sid,
 					struct policy_handle *domain_pol,
-					uint32 rid)
+					uint32_t rid)
 {
 	NTSTATUS result, status;
 	struct policy_handle group_pol;
-	uint32 num_members, *group_rids;
+	uint32_t num_members, *group_rids;
 	int i;
 	struct samr_RidAttrArray *rids = NULL;
 	struct lsa_Strings names;
@@ -3112,12 +3123,12 @@ static NTSTATUS rpc_list_alias_members(struct net_context *c,
 				       struct cli_state *cli,
 				       TALLOC_CTX *mem_ctx,
 				       struct policy_handle *domain_pol,
-				       uint32 rid)
+				       uint32_t rid)
 {
 	NTSTATUS result, status;
 	struct rpc_pipe_client *lsa_pipe;
 	struct policy_handle alias_pol, lsa_pol;
-	uint32 num_members;
+	uint32_t num_members;
 	struct dom_sid *alias_sids;
 	char **domains;
 	char **names;
@@ -3514,8 +3525,8 @@ static int rpc_share_add(struct net_context *c, int argc, const char **argv)
 	NET_API_STATUS status;
 	char *sharename;
 	char *path;
-	uint32 type = STYPE_DISKTREE; /* only allow disk shares to be added */
-	uint32 num_users=0, perms=0;
+	uint32_t type = STYPE_DISKTREE; /* only allow disk shares to be added */
+	uint32_t num_users=0, perms=0;
 	char *password=NULL; /* don't allow a share password */
 	struct SHARE_INFO_2 i2;
 	uint32_t parm_error = 0;
@@ -3597,7 +3608,7 @@ static void display_share_info_1(struct net_context *c,
 static WERROR get_share_info(struct net_context *c,
 			     struct rpc_pipe_client *pipe_hnd,
 			     TALLOC_CTX *mem_ctx,
-			     uint32 level,
+			     uint32_t level,
 			     int argc,
 			     const char **argv,
 			     struct srvsvc_NetShareInfoCtr *info_ctr)
@@ -3768,7 +3779,7 @@ static bool check_share_availability(struct cli_state *cli, const char *netname)
 }
 
 static bool check_share_sanity(struct net_context *c, struct cli_state *cli,
-			       const char *netname, uint32 type)
+			       const char *netname, uint32_t type)
 {
 	/* only support disk shares */
 	if (! ( type == STYPE_DISKTREE || type == (STYPE_DISKTREE | STYPE_HIDDEN)) ) {
@@ -3819,10 +3830,10 @@ static NTSTATUS rpc_share_migrate_shares_internals(struct net_context *c,
 	WERROR result;
 	NTSTATUS nt_status = NT_STATUS_UNSUCCESSFUL;
 	struct srvsvc_NetShareInfoCtr ctr_src;
-	uint32 i;
+	uint32_t i;
 	struct rpc_pipe_client *srvsvc_pipe = NULL;
 	struct cli_state *cli_dst = NULL;
-	uint32 level = 502; /* includes secdesc */
+	uint32_t level = 502; /* includes secdesc */
 	uint32_t parm_error = 0;
 	struct dcerpc_binding_handle *b;
 
@@ -4144,8 +4155,8 @@ static NTSTATUS rpc_share_migrate_files_internals(struct net_context *c,
 	WERROR result;
 	NTSTATUS nt_status = NT_STATUS_UNSUCCESSFUL;
 	struct srvsvc_NetShareInfoCtr ctr_src;
-	uint32 i;
-	uint32 level = 502;
+	uint32_t i;
+	uint32_t level = 502;
 	struct copy_clistate cp_clistate;
 	bool got_src_share = false;
 	bool got_dst_share = false;
@@ -4304,10 +4315,10 @@ static NTSTATUS rpc_share_migrate_security_internals(struct net_context *c,
 	NTSTATUS nt_status = NT_STATUS_UNSUCCESSFUL;
 	struct srvsvc_NetShareInfoCtr ctr_src;
 	union srvsvc_NetShareInfo info;
-	uint32 i;
+	uint32_t i;
 	struct rpc_pipe_client *srvsvc_pipe = NULL;
 	struct cli_state *cli_dst = NULL;
-	uint32 level = 502; /* includes secdesc */
+	uint32_t level = 502; /* includes secdesc */
 	uint32_t parm_error = 0;
 	struct dcerpc_binding_handle *b;
 
@@ -4511,7 +4522,7 @@ static int rpc_share_migrate(struct net_context *c, int argc, const char **argv)
 
 struct full_alias {
 	struct dom_sid sid;
-	uint32 num_members;
+	uint32_t num_members;
 	struct dom_sid *members;
 };
 
@@ -4555,7 +4566,7 @@ static NTSTATUS rpc_fetch_domain_aliases(struct rpc_pipe_client *pipe_hnd,
 					struct policy_handle *connect_pol,
 					const struct dom_sid *domain_sid)
 {
-	uint32 start_idx, max_entries, num_entries, i;
+	uint32_t start_idx, max_entries, num_entries, i;
 	struct samr_SamArray *groups = NULL;
 	NTSTATUS result, status;
 	struct policy_handle domain_pol;
@@ -5090,7 +5101,7 @@ static void show_userlist(struct rpc_pipe_client *pipe_hnd,
 	union srvsvc_NetShareInfo info;
 	WERROR result;
 	NTSTATUS status;
-	uint16 cnum;
+	uint16_t cnum;
 	struct dcerpc_binding_handle *b = pipe_hnd->binding_handle;
 
 	status = dcerpc_srvsvc_NetShareGetInfo(b, mem_ctx,
@@ -5125,7 +5136,7 @@ static void show_userlist(struct rpc_pipe_client *pipe_hnd,
 	}
 
 	for (i=0; i<num_tokens; i++) {
-		uint32 acc_granted;
+		uint32_t acc_granted;
 
 		if (share_sd != NULL) {
 			status = se_access_check(share_sd, &tokens[i].token,
@@ -5602,7 +5613,7 @@ static void display_file_info_3(struct FILE_INFO_3 *r)
 static int rpc_file_user(struct net_context *c, int argc, const char **argv)
 {
 	NET_API_STATUS status;
-	uint32 preferred_len = 0xffffffff, i;
+	uint32_t preferred_len = 0xffffffff, i;
 	char *username=NULL;
 	uint32_t total_entries = 0;
 	uint32_t entries_read = 0;
@@ -5866,7 +5877,7 @@ NTSTATUS rpc_init_shutdown_internals(struct net_context *c,
 	NTSTATUS status = NT_STATUS_UNSUCCESSFUL;
 	WERROR result;
         const char *msg = N_("This machine will be shutdown shortly");
-	uint32 timeout = 20;
+	uint32_t timeout = 20;
 	struct lsa_StringLarge msg_string;
 	struct dcerpc_binding_handle *b = pipe_hnd->binding_handle;
 
@@ -5922,7 +5933,7 @@ NTSTATUS rpc_reg_shutdown_internals(struct net_context *c,
 				    const char **argv)
 {
         const char *msg = N_("This machine will be shutdown shortly");
-	uint32 timeout = 20;
+	uint32_t timeout = 20;
 	struct lsa_StringLarge msg_string;
 	NTSTATUS result;
 	WERROR werr;
@@ -6027,9 +6038,9 @@ static NTSTATUS rpc_trustdom_add_internals(struct net_context *c,
 	NTSTATUS status, result;
 	char *acct_name;
 	struct lsa_String lsa_acct_name;
-	uint32 acb_info;
-	uint32 acct_flags=0;
-	uint32 user_rid;
+	uint32_t acb_info;
+	uint32_t acct_flags=0;
+	uint32_t user_rid;
 	uint32_t access_granted = 0;
 	union samr_UserInfo info;
 	unsigned int orig_timeout;

@@ -24,8 +24,6 @@
 #include "messages.h"
 #include "ntdomain.h"
 
-#include "lib/util/util_process.h"
-
 #include "lib/id_cache.h"
 
 #include "../lib/tsocket/tsocket.h"
@@ -116,7 +114,7 @@ static void lsasd_smb_conf_updated(struct messaging_context *msg,
 	ev_ctx = talloc_get_type_abort(private_data, struct tevent_context);
 
 	change_to_root_user();
-	lp_load(get_dyn_CONFIGFILE(), true, false, false, true);
+	lp_load_global(get_dyn_CONFIGFILE());
 
 	lsasd_reopen_logs(lsasd_child_id);
 	if (lsasd_child_id == 0) {
@@ -166,7 +164,7 @@ static void lsasd_sig_hup_handler(struct tevent_context *ev,
 {
 
 	change_to_root_user();
-	lp_load(get_dyn_CONFIGFILE(), true, false, false, true);
+	lp_load_global(get_dyn_CONFIGFILE());
 
 	lsasd_reopen_logs(lsasd_child_id);
 	pfh_daemon_config(DAEMON_NAME,
@@ -249,13 +247,11 @@ static bool lsasd_child_init(struct tevent_context *ev_ctx,
 	bool ok;
 
 	status = reinit_after_fork(msg_ctx, ev_ctx,
-				   true);
+				   true, "lsasd-child");
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0,("reinit_after_fork() failed\n"));
 		smb_panic("reinit_after_fork() failed");
 	}
-
-	prctl_set_comment("lsasd-child");
 
 	lsasd_child_id = child_id;
 	lsasd_reopen_logs(child_id);
@@ -278,21 +274,21 @@ static bool lsasd_child_init(struct tevent_context *ev_ctx,
 
 	status = rpc_lsarpc_init(NULL);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register lsarpc rpc inteface! (%s)\n",
+		DEBUG(0, ("Failed to register lsarpc rpc interface! (%s)\n",
 			  nt_errstr(status)));
 		return false;
 	}
 
 	status = rpc_samr_init(NULL);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register samr rpc inteface! (%s)\n",
+		DEBUG(0, ("Failed to register samr rpc interface! (%s)\n",
 			  nt_errstr(status)));
 		return false;
 	}
 
 	status = rpc_netlogon_init(NULL);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register netlogon rpc inteface! (%s)\n",
+		DEBUG(0, ("Failed to register netlogon rpc interface! (%s)\n",
 			  nt_errstr(status)));
 		return false;
 	}
@@ -446,7 +442,7 @@ static void lsasd_handle_client(struct tevent_req *req)
 		  (int)(data->pf->pid)));
 
 	if (tsocket_address_is_inet(srv_addr, "ip")) {
-		DEBUG(3, ("Got a tcpip client connection from %s on inteface %s\n",
+		DEBUG(3, ("Got a tcpip client connection from %s on interface %s\n",
 			   tsocket_address_string(cli_addr, tmp_ctx),
 			   tsocket_address_string(srv_addr, tmp_ctx)));
 
@@ -861,15 +857,11 @@ void start_lsasd(struct tevent_context *ev_ctx,
 		return;
 	}
 
-	status = reinit_after_fork(msg_ctx,
-				   ev_ctx,
-				   true);
+	status = smbd_reinit_after_fork(msg_ctx, ev_ctx, true, "lsasd-master");
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0,("reinit_after_fork() failed\n"));
 		smb_panic("reinit_after_fork() failed");
 	}
-
-	prctl_set_comment("lsasd-master");
 
 	/* save the parent process id so the children can use it later */
 	parent_id = messaging_server_id(msg_ctx);
@@ -919,21 +911,21 @@ void start_lsasd(struct tevent_context *ev_ctx,
 
 	status = rpc_lsarpc_init(NULL);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register lsarpc rpc inteface in lsasd! (%s)\n",
+		DEBUG(0, ("Failed to register lsarpc rpc interface in lsasd! (%s)\n",
 			  nt_errstr(status)));
 		exit(1);
 	}
 
 	status = rpc_samr_init(NULL);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register samr rpc inteface in lsasd! (%s)\n",
+		DEBUG(0, ("Failed to register samr rpc interface in lsasd! (%s)\n",
 			  nt_errstr(status)));
 		exit(1);
 	}
 
 	status = rpc_netlogon_init(NULL);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register netlogon rpc inteface in lsasd! (%s)\n",
+		DEBUG(0, ("Failed to register netlogon rpc interface in lsasd! (%s)\n",
 			  nt_errstr(status)));
 		exit(1);
 	}

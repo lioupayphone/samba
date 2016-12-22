@@ -12,6 +12,7 @@ if [ -n "$ctdb_dir" -a -d "${ctdb_dir}/bin" ] ; then
     PATH="${ctdb_dir}/bin:${PATH}"
     export CTDB_LOCK_HELPER="${ctdb_dir}/bin/ctdb_lock_helper"
     export CTDB_EVENT_HELPER="${ctdb_dir}/bin/ctdb_event_helper"
+    export CTDB_RECOVERY_HELPER="${ctdb_dir}/bin/ctdb_recovery_helper"
 fi
 
 export CTDB_NODES="${TEST_VAR_DIR}/nodes.txt"
@@ -21,7 +22,7 @@ export CTDB_NODES="${TEST_VAR_DIR}/nodes.txt"
 daemons_stop ()
 {
     echo "Attempting to politely shutdown daemons..."
-    onnode 1 $CTDB shutdown -n all || true
+    onnode -q all $CTDB shutdown || true
 
     echo "Sleeping for a while..."
     sleep_for 1
@@ -105,7 +106,7 @@ daemons_start_1 ()
     fi
 
     local node_ip=$(sed -n -e "$(($pnn + 1))p" "$CTDB_NODES")
-    local ctdb_options="--sloppy-start --reclock=${TEST_VAR_DIR}/rec.lock --nlist $CTDB_NODES --nopublicipcheck --listen=${node_ip} --event-script-dir=${TEST_VAR_DIR}/events.d --logfile=${TEST_VAR_DIR}/daemon.${pnn}.log -d 3 --dbdir=${TEST_VAR_DIR}/test.db --dbdir-persistent=${TEST_VAR_DIR}/test.db/persistent --dbdir-state=${TEST_VAR_DIR}/test.db/state --nosetsched"
+    local ctdb_options="--sloppy-start --reclock=${TEST_VAR_DIR}/rec.lock --nlist $CTDB_NODES --nopublicipcheck --listen=${node_ip} --event-script-dir=${TEST_VAR_DIR}/events.d --logging=file:${TEST_VAR_DIR}/daemon.${pnn}.log -d 3 --dbdir=${TEST_VAR_DIR}/test.db --dbdir-persistent=${TEST_VAR_DIR}/test.db/persistent --dbdir-state=${TEST_VAR_DIR}/test.db/state --nosetsched"
 
     if [ $pnn -eq $no_public_ips ] ; then
 	ctdb_options="$ctdb_options --public-addresses=/dev/null"

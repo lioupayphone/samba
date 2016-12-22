@@ -38,6 +38,7 @@
 #include "lib/util/tevent_ntstatus.h"
 #include "../libcli/security/security.h"
 #include "lib/util_ea.h"
+#include "librpc/gen_ndr/ndr_ioctl.h"
 
 struct smb2_hnd {
 	uint64_t fid_persistent;
@@ -261,6 +262,7 @@ NTSTATUS cli_smb2_create_fnum_recv(struct tevent_req *req, uint16_t *pfnum,
 	NTSTATUS status;
 
 	if (tevent_req_is_nterror(req, &status)) {
+		state->cli->raw_status = status;
 		return status;
 	}
 	if (pfnum != NULL) {
@@ -269,6 +271,7 @@ NTSTATUS cli_smb2_create_fnum_recv(struct tevent_req *req, uint16_t *pfnum,
 	if (cr != NULL) {
 		*cr = state->cr;
 	}
+	state->cli->raw_status = NT_STATUS_OK;
 	return NT_STATUS_OK;
 }
 
@@ -389,7 +392,11 @@ static void cli_smb2_close_fnum_done(struct tevent_req *subreq)
 
 NTSTATUS cli_smb2_close_fnum_recv(struct tevent_req *req)
 {
-	return tevent_req_simple_recv_ntstatus(req);
+	struct cli_smb2_close_fnum_state *state = tevent_req_data(
+		req, struct cli_smb2_close_fnum_state);
+	NTSTATUS status = tevent_req_simple_recv_ntstatus(req);
+	state->cli->raw_status = status;
+	return status;
 }
 
 NTSTATUS cli_smb2_close_fnum(struct cli_state *cli, uint16_t fnum)
@@ -1591,7 +1598,8 @@ NTSTATUS cli_smb2_setattrE(struct cli_state *cli,
  Synchronous only.
 ***************************************************************/
 
-NTSTATUS cli_smb2_dskattr(struct cli_state *cli, uint64_t *bsize, uint64_t *total, uint64_t *avail)
+NTSTATUS cli_smb2_dskattr(struct cli_state *cli, const char *path,
+			  uint64_t *bsize, uint64_t *total, uint64_t *avail)
 {
 	NTSTATUS status;
 	uint16_t fnum = 0xffff;
@@ -1618,7 +1626,7 @@ NTSTATUS cli_smb2_dskattr(struct cli_state *cli, uint64_t *bsize, uint64_t *tota
 
 	/* First open the top level directory. */
 	status = cli_smb2_create_fnum(cli,
-			"",
+			path,
 			0,			/* create_flags */
 			FILE_READ_ATTRIBUTES,	/* desired_access */
 			FILE_ATTRIBUTE_DIRECTORY, /* file attributes */
@@ -2300,6 +2308,7 @@ NTSTATUS cli_smb2_read_recv(struct tevent_req *req,
 				req, struct cli_smb2_read_state);
 
 	if (tevent_req_is_nterror(req, &status)) {
+		state->cli->raw_status = status;
 		return status;
 	}
 	/*
@@ -2309,6 +2318,7 @@ NTSTATUS cli_smb2_read_recv(struct tevent_req *req,
 	 */
 	*received = (ssize_t)state->received;
 	*rcvbuf = state->buf;
+	state->cli->raw_status = NT_STATUS_OK;
 	return NT_STATUS_OK;
 }
 
@@ -2407,6 +2417,7 @@ NTSTATUS cli_smb2_write_recv(struct tevent_req *req,
 	NTSTATUS status;
 
 	if (tevent_req_is_nterror(req, &status)) {
+		state->cli->raw_status = status;
 		tevent_req_received(req);
 		return status;
 	}
@@ -2414,6 +2425,7 @@ NTSTATUS cli_smb2_write_recv(struct tevent_req *req,
 	if (pwritten != NULL) {
 		*pwritten = (size_t)state->written;
 	}
+	state->cli->raw_status = NT_STATUS_OK;
 	tevent_req_received(req);
 	return NT_STATUS_OK;
 }
@@ -2571,10 +2583,281 @@ NTSTATUS cli_smb2_writeall_recv(struct tevent_req *req,
 	NTSTATUS status;
 
 	if (tevent_req_is_nterror(req, &status)) {
+		state->cli->raw_status = status;
 		return status;
 	}
 	if (pwritten != NULL) {
 		*pwritten = (size_t)state->written;
 	}
+	state->cli->raw_status = NT_STATUS_OK;
+	return NT_STATUS_OK;
+}
+
+struct cli_smb2_splice_state {
+	struct tevent_context *ev;
+	struct cli_state *cli;
+	struct smb2_hnd *src_ph;
+	struct smb2_hnd *dst_ph;
+	int (*splice_cb)(off_t n, void *priv);
+	void *priv;
+	off_t written;
+	off_t size;
+	off_t src_offset;
+	off_t dst_offset;
+	bool resized;
+	struct req_resume_key_rsp resume_rsp;
+	struct srv_copychunk_copy cc_copy;
+};
+
+static void cli_splice_copychunk_send(struct cli_smb2_splice_state *state,
+				      struct tevent_req *req);
+
+static void cli_splice_copychunk_done(struct tevent_req *subreq)
+{
+	struct tevent_req *req = tevent_req_callback_data(
+		subreq, struct tevent_req);
+	struct cli_smb2_splice_state *state =
+		tevent_req_data(req,
+		struct cli_smb2_splice_state);
+	struct smbXcli_conn *conn = state->cli->conn;
+	DATA_BLOB out_input_buffer = data_blob_null;
+	DATA_BLOB out_output_buffer = data_blob_null;
+	struct srv_copychunk_rsp cc_copy_rsp;
+	enum ndr_err_code ndr_ret;
+	NTSTATUS status;
+
+	status = smb2cli_ioctl_recv(subreq, state,
+				    &out_input_buffer,
+				    &out_output_buffer);
+	TALLOC_FREE(subreq);
+	if ((!NT_STATUS_EQUAL(status, NT_STATUS_INVALID_PARAMETER) ||
+	     state->resized) && tevent_req_nterror(req, status)) {
+		return;
+	}
+
+	ndr_ret = ndr_pull_struct_blob(&out_output_buffer, state, &cc_copy_rsp,
+			(ndr_pull_flags_fn_t)ndr_pull_srv_copychunk_rsp);
+	if (ndr_ret != NDR_ERR_SUCCESS) {
+		DEBUG(0, ("failed to unmarshall copy chunk rsp\n"));
+		tevent_req_nterror(req, NT_STATUS_INVALID_NETWORK_RESPONSE);
+		return;
+	}
+
+	if (NT_STATUS_EQUAL(status, NT_STATUS_INVALID_PARAMETER)) {
+		uint32_t max_chunks = MIN(cc_copy_rsp.chunks_written,
+			     cc_copy_rsp.total_bytes_written / cc_copy_rsp.chunk_bytes_written);
+		if ((cc_copy_rsp.chunk_bytes_written > smb2cli_conn_cc_chunk_len(conn) ||
+		     max_chunks > smb2cli_conn_cc_max_chunks(conn)) &&
+		     tevent_req_nterror(req, status)) {
+			return;
+		}
+
+		state->resized = true;
+		smb2cli_conn_set_cc_chunk_len(conn, cc_copy_rsp.chunk_bytes_written);
+		smb2cli_conn_set_cc_max_chunks(conn, max_chunks);
+	} else {
+		if ((state->src_offset > INT64_MAX - cc_copy_rsp.total_bytes_written) ||
+		    (state->dst_offset > INT64_MAX - cc_copy_rsp.total_bytes_written) ||
+		    (state->written > INT64_MAX - cc_copy_rsp.total_bytes_written)) {
+			tevent_req_nterror(req, NT_STATUS_FILE_TOO_LARGE);
+			return;
+		}
+		state->src_offset += cc_copy_rsp.total_bytes_written;
+		state->dst_offset += cc_copy_rsp.total_bytes_written;
+		state->written += cc_copy_rsp.total_bytes_written;
+		if (!state->splice_cb(state->written, state->priv)) {
+			tevent_req_nterror(req, NT_STATUS_CANCELLED);
+			return;
+		}
+	}
+
+	cli_splice_copychunk_send(state, req);
+}
+
+static void cli_splice_copychunk_send(struct cli_smb2_splice_state *state,
+				      struct tevent_req *req)
+{
+	struct tevent_req *subreq;
+	enum ndr_err_code ndr_ret;
+	struct smbXcli_conn *conn = state->cli->conn;
+	struct srv_copychunk_copy *cc_copy = &state->cc_copy;
+	off_t src_offset = state->src_offset;
+	off_t dst_offset = state->dst_offset;
+	uint32_t req_len = MIN(smb2cli_conn_cc_chunk_len(conn) * smb2cli_conn_cc_max_chunks(conn),
+			       state->size - state->written);
+	DATA_BLOB in_input_buffer = data_blob_null;
+	DATA_BLOB in_output_buffer = data_blob_null;
+
+	if (state->size - state->written == 0) {
+		tevent_req_done(req);
+		return;
+	}
+
+	cc_copy->chunk_count = 0;
+	while (req_len) {
+		cc_copy->chunks[cc_copy->chunk_count].source_off = src_offset;
+		cc_copy->chunks[cc_copy->chunk_count].target_off = dst_offset;
+		cc_copy->chunks[cc_copy->chunk_count].length = MIN(req_len,
+				                                   smb2cli_conn_cc_chunk_len(conn));
+		if (req_len < cc_copy->chunks[cc_copy->chunk_count].length) {
+			tevent_req_nterror(req, NT_STATUS_INTERNAL_ERROR);
+			return;
+		}
+		req_len -= cc_copy->chunks[cc_copy->chunk_count].length;
+		if ((src_offset > INT64_MAX - cc_copy->chunks[cc_copy->chunk_count].length) ||
+		    (dst_offset > INT64_MAX - cc_copy->chunks[cc_copy->chunk_count].length)) {
+			tevent_req_nterror(req, NT_STATUS_FILE_TOO_LARGE);
+			return;
+		}
+		src_offset += cc_copy->chunks[cc_copy->chunk_count].length;
+		dst_offset += cc_copy->chunks[cc_copy->chunk_count].length;
+		cc_copy->chunk_count++;
+	}
+
+	ndr_ret = ndr_push_struct_blob(&in_input_buffer, state, cc_copy,
+				       (ndr_push_flags_fn_t)ndr_push_srv_copychunk_copy);
+	if (ndr_ret != NDR_ERR_SUCCESS) {
+		DEBUG(0, ("failed to marshall copy chunk req\n"));
+		tevent_req_nterror(req, NT_STATUS_INTERNAL_ERROR);
+		return;
+	}
+
+	subreq = smb2cli_ioctl_send(state, state->ev, state->cli->conn,
+			       state->cli->timeout,
+			       state->cli->smb2.session,
+			       state->cli->smb2.tcon,
+			       state->dst_ph->fid_persistent, /* in_fid_persistent */
+			       state->dst_ph->fid_volatile, /* in_fid_volatile */
+			       FSCTL_SRV_COPYCHUNK_WRITE,
+			       0, /* in_max_input_length */
+			       &in_input_buffer,
+			       12, /* in_max_output_length */
+			       &in_output_buffer,
+			       SMB2_IOCTL_FLAG_IS_FSCTL);
+	if (tevent_req_nomem(subreq, req)) {
+		return;
+	}
+	tevent_req_set_callback(subreq,
+				cli_splice_copychunk_done,
+				req);
+}
+
+static void cli_splice_key_done(struct tevent_req *subreq)
+{
+	struct tevent_req *req = tevent_req_callback_data(
+		subreq, struct tevent_req);
+	struct cli_smb2_splice_state *state =
+		tevent_req_data(req,
+		struct cli_smb2_splice_state);
+	enum ndr_err_code ndr_ret;
+	NTSTATUS status;
+
+	DATA_BLOB out_input_buffer = data_blob_null;
+	DATA_BLOB out_output_buffer = data_blob_null;
+
+	status = smb2cli_ioctl_recv(subreq, state,
+				    &out_input_buffer,
+				    &out_output_buffer);
+	TALLOC_FREE(subreq);
+	if (tevent_req_nterror(req, status)) {
+		return;
+	}
+
+	ndr_ret = ndr_pull_struct_blob(&out_output_buffer,
+			state, &state->resume_rsp,
+			(ndr_pull_flags_fn_t)ndr_pull_req_resume_key_rsp);
+	if (ndr_ret != NDR_ERR_SUCCESS) {
+		DEBUG(0, ("failed to unmarshall resume key rsp\n"));
+		tevent_req_nterror(req, NT_STATUS_INVALID_NETWORK_RESPONSE);
+		return;
+	}
+
+	memcpy(&state->cc_copy.source_key,
+	       &state->resume_rsp.resume_key,
+	       sizeof state->resume_rsp.resume_key);
+
+	cli_splice_copychunk_send(state, req);
+}
+
+struct tevent_req *cli_smb2_splice_send(TALLOC_CTX *mem_ctx,
+				struct tevent_context *ev,
+				struct cli_state *cli,
+				uint16_t src_fnum, uint16_t dst_fnum,
+				off_t size, off_t src_offset, off_t dst_offset,
+				int (*splice_cb)(off_t n, void *priv),
+				void *priv)
+{
+	struct tevent_req *req;
+	struct tevent_req *subreq;
+	struct cli_smb2_splice_state *state;
+	NTSTATUS status;
+	DATA_BLOB in_input_buffer = data_blob_null;
+	DATA_BLOB in_output_buffer = data_blob_null;
+
+	req = tevent_req_create(mem_ctx, &state, struct cli_smb2_splice_state);
+	if (req == NULL) {
+		return NULL;
+	}
+	state->cli = cli;
+	state->ev = ev;
+	state->splice_cb = splice_cb;
+	state->priv = priv;
+	state->size = size;
+	state->written = 0;
+	state->src_offset = src_offset;
+	state->dst_offset = dst_offset;
+	state->cc_copy.chunks = talloc_array(state,
+			                     struct srv_copychunk,
+					     smb2cli_conn_cc_max_chunks(cli->conn));
+	if (state->cc_copy.chunks == NULL) {
+		return NULL;
+	}
+
+	status = map_fnum_to_smb2_handle(cli, src_fnum, &state->src_ph);
+	if (tevent_req_nterror(req, status))
+		return tevent_req_post(req, ev);
+
+	status = map_fnum_to_smb2_handle(cli, dst_fnum, &state->dst_ph);
+	if (tevent_req_nterror(req, status))
+		return tevent_req_post(req, ev);
+
+	subreq = smb2cli_ioctl_send(state, ev, cli->conn,
+			       cli->timeout,
+			       cli->smb2.session,
+			       cli->smb2.tcon,
+			       state->src_ph->fid_persistent, /* in_fid_persistent */
+			       state->src_ph->fid_volatile, /* in_fid_volatile */
+			       FSCTL_SRV_REQUEST_RESUME_KEY,
+			       0, /* in_max_input_length */
+			       &in_input_buffer,
+			       32, /* in_max_output_length */
+			       &in_output_buffer,
+			       SMB2_IOCTL_FLAG_IS_FSCTL);
+	if (tevent_req_nomem(subreq, req)) {
+		return NULL;
+	}
+	tevent_req_set_callback(subreq,
+				cli_splice_key_done,
+				req);
+
+	return req;
+}
+
+NTSTATUS cli_smb2_splice_recv(struct tevent_req *req, off_t *written)
+{
+	struct cli_smb2_splice_state *state = tevent_req_data(
+		req, struct cli_smb2_splice_state);
+	NTSTATUS status;
+
+	if (tevent_req_is_nterror(req, &status)) {
+		state->cli->raw_status = status;
+		tevent_req_received(req);
+		return status;
+	}
+	if (written != NULL) {
+		*written = state->written;
+	}
+	state->cli->raw_status = NT_STATUS_OK;
+	tevent_req_received(req);
 	return NT_STATUS_OK;
 }

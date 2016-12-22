@@ -285,6 +285,9 @@ interface security
 	const string SID_NT_TRUSTED_INSTALLER =
 		"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
 
+	const string SID_AUTHENTICATION_AUTHORITY_ASSERTED_IDENTITY = "S-1-18-1";
+	const string SID_SERVICE_ASSERTED_IDENTITY = "S-1-18-2";
+
 	/* well-known domain RIDs */
 	const int DOMAIN_RID_LOGON                   = 9;
 	const int DOMAIN_RID_ENTERPRISE_READONLY_DCS = 498;
@@ -704,6 +707,7 @@ interface security
         const string GUID_DRS_ENABLE_PER_USER_REVERSIBLY_ENCRYPTED_PASSWORD
 	                                              = "05c74c5e-4deb-43b4-bd9f-86664c2a7fd5";
         const string GUID_DRS_DS_INSTALL_REPLICA      = "9923a32a-3607-11d2-b9be-0000f87a36b2";
+	const string GUID_DRS_REANIMATE_TOMBSTONE     = "45ec5156-db7e-47bb-b53f-dbeb2d03c40f";
 
 
 	/***************************************************************/

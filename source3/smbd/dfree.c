@@ -25,36 +25,21 @@
  Normalise for DOS usage.
 ****************************************************************************/
 
-void disk_norm(bool small_query, uint64_t *bsize,uint64_t *dfree,uint64_t *dsize)
+static void disk_norm(uint64_t *bsize, uint64_t *dfree, uint64_t *dsize)
 {
 	/* check if the disk is beyond the max disk size */
 	uint64_t maxdisksize = lp_max_disk_size();
 	if (maxdisksize) {
 		/* convert to blocks - and don't overflow */
 		maxdisksize = ((maxdisksize*1024)/(*bsize))*1024;
-		if (*dsize > maxdisksize) *dsize = maxdisksize;
-		if (*dfree > maxdisksize) *dfree = maxdisksize-1; 
+		if (*dsize > maxdisksize) {
+			*dsize = maxdisksize;
+		}
+		if (*dfree > maxdisksize) {
+			*dfree = maxdisksize - 1;
+		}
 		/* the -1 should stop applications getting div by 0
 		   errors */
-	}  
-
-	if(small_query) {	
-		while (*dfree > WORDMAX || *dsize > WORDMAX || *bsize < 512) {
-			*dfree /= 2;
-			*dsize /= 2;
-			*bsize *= 2;
-			/*
-			 * Force max to fit in 16 bit fields.
-			 */
-			if (*bsize > (WORDMAX*512)) {
-				*bsize = (WORDMAX*512);
-				if (*dsize > WORDMAX)
-					*dsize = WORDMAX;
-				if (*dfree >  WORDMAX)
-					*dfree = WORDMAX;
-				break;
-			}
-		}
 	}
 }
 
@@ -64,14 +49,15 @@ void disk_norm(bool small_query, uint64_t *bsize,uint64_t *dfree,uint64_t *dsize
  Return number of 1K blocks available on a path and total number.
 ****************************************************************************/
 
-uint64_t sys_disk_free(connection_struct *conn, const char *path, bool small_query, 
-                              uint64_t *bsize,uint64_t *dfree,uint64_t *dsize)
+uint64_t sys_disk_free(connection_struct *conn, const char *path,
+		       uint64_t *bsize, uint64_t *dfree, uint64_t *dsize)
 {
 	uint64_t dfree_retval;
 	uint64_t dfree_q = 0;
 	uint64_t bsize_q = 0;
 	uint64_t dsize_q = 0;
 	const char *dfree_command;
+	static bool dfree_broken = false;
 
 	(*dfree) = (*dsize) = 0;
 	(*bsize) = 512;
@@ -130,14 +116,22 @@ uint64_t sys_disk_free(connection_struct *conn, const char *path, bool small_que
 			   syscmd, strerror(errno) ));
 	}
 
-	if (sys_fsusage(path, dfree, dsize) != 0) {
-		DEBUG (0, ("disk_free: sys_fsusage() failed. Error was : %s\n",
-			strerror(errno) ));
+	if (SMB_VFS_DISK_FREE(conn, path, bsize, dfree, dsize) ==
+	    (uint64_t)-1) {
+		DBG_ERR("VFS disk_free failed. Error was : %s\n",
+			strerror(errno));
 		return (uint64_t)-1;
 	}
 
-	if (disk_quotas(path, &bsize_q, &dfree_q, &dsize_q)) {
-		(*bsize) = bsize_q;
+	if (disk_quotas(conn, path, &bsize_q, &dfree_q, &dsize_q)) {
+		uint64_t min_bsize = MIN(*bsize, bsize_q);
+
+		(*dfree) = (*dfree) * (*bsize) / min_bsize;
+		(*dsize) = (*dsize) * (*bsize) / min_bsize;
+		dfree_q = dfree_q * bsize_q / min_bsize;
+		dsize_q = dsize_q * bsize_q / min_bsize;
+
+		(*bsize) = min_bsize;
 		(*dfree) = MIN(*dfree,dfree_q);
 		(*dsize) = MIN(*dsize,dsize_q);
 	}
@@ -158,7 +152,7 @@ uint64_t sys_disk_free(connection_struct *conn, const char *path, bool small_que
 	}
 
 dfree_done:
-	disk_norm(small_query,bsize,dfree,dsize);
+	disk_norm(bsize, dfree, dsize);
 
 	if ((*bsize) < 1024) {
 		dfree_retval = (*dfree)/(1024/(*bsize));
@@ -175,7 +169,6 @@ dfree_done:
 
 uint64_t get_dfree_info(connection_struct *conn,
 			const char *path,
-			bool small_query,
 			uint64_t *bsize,
 			uint64_t *dfree,
 			uint64_t *dsize)
@@ -185,7 +178,7 @@ uint64_t get_dfree_info(connection_struct *conn,
 	uint64_t dfree_ret;
 
 	if (!dfree_cache_time) {
-		return SMB_VFS_DISK_FREE(conn,path,small_query,bsize,dfree,dsize);
+		return sys_disk_free(conn, path, bsize, dfree, dsize);
 	}
 
 	if (dfc && (conn->lastused - dfc->last_dfree_time < dfree_cache_time)) {
@@ -196,7 +189,7 @@ uint64_t get_dfree_info(connection_struct *conn,
 		return dfc->dfree_ret;
 	}
 
-	dfree_ret = SMB_VFS_DISK_FREE(conn,path,small_query,bsize,dfree,dsize);
+	dfree_ret = sys_disk_free(conn, path, bsize, dfree, dsize);
 
 	if (dfree_ret == (uint64_t)-1) {
 		/* Don't cache bad data. */

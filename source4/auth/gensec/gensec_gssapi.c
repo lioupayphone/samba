@@ -87,7 +87,9 @@ static NTSTATUS gensec_gssapi_start(struct gensec_security *gensec_security)
 {
 	struct gensec_gssapi_state *gensec_gssapi_state;
 	krb5_error_code ret;
+#ifdef SAMBA4_USES_HEIMDAL
 	const char *realm;
+#endif
 
 	gensec_gssapi_state = talloc_zero(gensec_security, struct gensec_gssapi_state);
 	if (!gensec_gssapi_state) {
@@ -276,6 +278,7 @@ static NTSTATUS gensec_gssapi_client_creds(struct gensec_security *gensec_securi
 	case KRB5KDC_ERR_CLIENT_REVOKED:
 		DEBUG(1, ("Account locked out: %s\n", error_string));
 		return NT_STATUS_ACCOUNT_LOCKED_OUT;
+	case KRB5_REALM_UNKNOWN:
 	case KRB5_KDC_UNREACH:
 		DEBUG(3, ("Cannot reach a KDC we require to contact %s : %s\n", gensec_gssapi_state->target_principal, error_string));
 		return NT_STATUS_NO_LOGON_SERVERS;
@@ -416,8 +419,8 @@ static NTSTATUS gensec_gssapi_update(struct gensec_security *gensec_security,
 		{
 #ifdef SAMBA4_USES_HEIMDAL
 			struct gsskrb5_send_to_kdc send_to_kdc;
-#endif
 			krb5_error_code ret;
+#endif
 
 			nt_status = gensec_gssapi_client_creds(gensec_security, ev);
 			if (!NT_STATUS_IS_OK(nt_status)) {
@@ -526,7 +529,7 @@ static NTSTATUS gensec_gssapi_update(struct gensec_security *gensec_security,
 			
 			return NT_STATUS_MORE_PROCESSING_REQUIRED;
 		} else if (maj_stat == GSS_S_CONTEXT_EXPIRED) {
-			gss_cred_id_t creds;
+			gss_cred_id_t creds = NULL;
 			gss_name_t name;
 			gss_buffer_desc buffer;
 			OM_uint32 lifetime = 0;
@@ -553,7 +556,7 @@ static NTSTATUS gensec_gssapi_update(struct gensec_security *gensec_security,
 						    &name, &lifetime, &usage, NULL);
 
 			if (maj_stat == GSS_S_COMPLETE) {
-				const char *usage_string;
+				const char *usage_string = NULL;
 				switch (usage) {
 				case GSS_C_BOTH:
 					usage_string = "GSS_C_BOTH";
@@ -1014,8 +1017,8 @@ static NTSTATUS gensec_gssapi_seal_packet(struct gensec_security *gensec_securit
 				    whole_pdu, pdu_length,
 				    mem_ctx, sig);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("gssapi_seal_packet(hdr_signing=%u,sig_size=%ju,"
-			  "data=%ju,pdu=%ju) failed: %s\n",
+		DEBUG(0, ("gssapi_seal_packet(hdr_signing=%u,sig_size=%zu,"
+			  "data=%zu,pdu=%zu) failed: %s\n",
 			  hdr_signing, sig_size, length, pdu_length,
 			  nt_errstr(status)));
 		return status;
@@ -1045,8 +1048,8 @@ static NTSTATUS gensec_gssapi_unseal_packet(struct gensec_security *gensec_secur
 				      whole_pdu, pdu_length,
 				      sig);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("gssapi_unseal_packet(hdr_signing=%u,sig_size=%ju,"
-			  "data=%ju,pdu=%ju) failed: %s\n",
+		DEBUG(0, ("gssapi_unseal_packet(hdr_signing=%u,sig_size=%zu,"
+			  "data=%zu,pdu=%zu) failed: %s\n",
 			  hdr_signing, sig->length, length, pdu_length,
 			  nt_errstr(status)));
 		return status;
@@ -1078,7 +1081,7 @@ static NTSTATUS gensec_gssapi_sign_packet(struct gensec_security *gensec_securit
 				    mem_ctx, sig);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0, ("gssapi_sign_packet(hdr_signing=%u,"
-			  "data=%ju,pdu=%ju) failed: %s\n",
+			  "data=%zu,pdu=%zu) failed: %s\n",
 			  hdr_signing, length, pdu_length,
 			  nt_errstr(status)));
 		return status;
@@ -1108,8 +1111,8 @@ static NTSTATUS gensec_gssapi_check_packet(struct gensec_security *gensec_securi
 				     whole_pdu, pdu_length,
 				     sig);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("gssapi_check_packet(hdr_signing=%u,sig_size=%ju,"
-			  "data=%ju,pdu=%ju) failed: %s\n",
+		DEBUG(0, ("gssapi_check_packet(hdr_signing=%u,sig_size=%zu,"
+			  "data=%zu,pdu=%zu) failed: %s\n",
 			  hdr_signing, sig->length, length, pdu_length,
 			  nt_errstr(status)));
 		return status;

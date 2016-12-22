@@ -17,12 +17,22 @@
    along with this program; if not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "includes.h"
-#include "tdb.h"
-#include "lib/util/dlinklist.h"
+#include "replace.h"
 #include "system/network.h"
 #include "system/filesys.h"
-#include "../include/ctdb_private.h"
+
+#include <talloc.h>
+#include <tevent.h>
+
+#include "lib/util/dlinklist.h"
+#include "lib/util/debug.h"
+#include "lib/util/samba_util.h"
+
+#include "ctdb_private.h"
+#include "ctdb_client.h"
+
+#include "common/common.h"
+#include "common/logging.h"
 
 /*
   choose the transport we will use
@@ -39,7 +49,7 @@ int ctdb_set_transport(struct ctdb_context *ctdb, const char *transport)
   Check whether an ip is a valid node ip
   Returns the node id for this ip address or -1
 */
-int ctdb_ip_to_nodeid(struct ctdb_context *ctdb, const char *nodeip)
+int ctdb_ip_to_nodeid(struct ctdb_context *ctdb, const ctdb_sock_addr *nodeip)
 {
 	int nodeid;
 
@@ -47,7 +57,7 @@ int ctdb_ip_to_nodeid(struct ctdb_context *ctdb, const char *nodeip)
 		if (ctdb->nodes[nodeid]->flags & NODE_FLAGS_DELETED) {
 			continue;
 		}
-		if (!strcmp(ctdb->nodes[nodeid]->address.address, nodeip)) {
+		if (ctdb_same_ip(&ctdb->nodes[nodeid]->address, nodeip)) {
 			return nodeid;
 		}
 	}
@@ -67,7 +77,6 @@ int ctdb_set_recovery_lock_file(struct ctdb_context *ctdb, const char *file)
 
 	if (file == NULL) {
 		DEBUG(DEBUG_ALERT,("Recovery lock file set to \"\". Disabling recovery lock checking\n"));
-		ctdb->tunable.verify_recovery_lock = 0;
 		return 0;
 	}
 
@@ -77,180 +86,72 @@ int ctdb_set_recovery_lock_file(struct ctdb_context *ctdb, const char *file)
 	return 0;
 }
 
-/*
-  add a node to the list of nodes
-*/
-static int ctdb_add_node(struct ctdb_context *ctdb, char *nstr)
+/* Load a nodes list file into a nodes array */
+static int convert_node_map_to_list(struct ctdb_context *ctdb,
+				    TALLOC_CTX *mem_ctx,
+				    struct ctdb_node_map_old *node_map,
+				    struct ctdb_node ***nodes,
+				    uint32_t *num_nodes)
 {
-	struct ctdb_node *node, **nodep;
+	int i;
 
-	nodep = talloc_realloc(ctdb, ctdb->nodes, struct ctdb_node *, ctdb->num_nodes+1);
-	CTDB_NO_MEMORY(ctdb, nodep);
+	*nodes = talloc_zero_array(mem_ctx,
+					struct ctdb_node *, node_map->num);
+	CTDB_NO_MEMORY(ctdb, *nodes);
+	*num_nodes = node_map->num;
 
-	ctdb->nodes = nodep;
-	nodep = &ctdb->nodes[ctdb->num_nodes];
-	(*nodep) = talloc_zero(ctdb->nodes, struct ctdb_node);
-	CTDB_NO_MEMORY(ctdb, *nodep);
-	node = *nodep;
+	for (i = 0; i < node_map->num; i++) {
+		struct ctdb_node *node;
 
-	if (ctdb_parse_address(ctdb, node, nstr, &node->address) != 0) {
-		return -1;
+		node = talloc_zero(*nodes, struct ctdb_node);
+		CTDB_NO_MEMORY(ctdb, node);
+		(*nodes)[i] = node;
+
+		node->address = node_map->nodes[i].addr;
+		node->name = talloc_asprintf(node, "%s:%u",
+					     ctdb_addr_to_str(&node->address),
+					     ctdb_addr_to_port(&node->address));
+
+		node->flags = node_map->nodes[i].flags;
+		if (!(node->flags & NODE_FLAGS_DELETED)) {
+			node->flags = NODE_FLAGS_UNHEALTHY;
+		}
+		node->flags |= NODE_FLAGS_DISCONNECTED;
+
+		node->pnn = i;
+		node->ctdb = ctdb;
+		node->dead_count = 0;
 	}
-	node->ctdb = ctdb;
-	node->name = talloc_asprintf(node, "%s:%u", 
-				     node->address.address, 
-				     node->address.port);
-	/* this assumes that the nodes are kept in sorted order, and no gaps */
-	node->pnn = ctdb->num_nodes;
-
-	/* nodes start out disconnected and unhealthy */
-	node->flags = (NODE_FLAGS_DISCONNECTED | NODE_FLAGS_UNHEALTHY);
-
-	if (ctdb->address.address &&
-	    ctdb_same_address(&ctdb->address, &node->address)) {
-		/* for automatic binding to interfaces, see tcp_connect.c */
-		ctdb->pnn = node->pnn;
-	}
-
-	ctdb->num_nodes++;
-	node->dead_count = 0;
 
 	return 0;
 }
 
-/*
-  add an entry for a "deleted" node to the list of nodes.
-  a "deleted" node is a node that is commented out from the nodes file.
-  this is used to prevent that subsequent nodes in the nodes list
-  change their pnn value if a node is "delete" by commenting it out and then
-  using "ctdb reloadnodes" at runtime.
-*/
-static int ctdb_add_deleted_node(struct ctdb_context *ctdb)
-{
-	struct ctdb_node *node, **nodep;
-
-	nodep = talloc_realloc(ctdb, ctdb->nodes, struct ctdb_node *, ctdb->num_nodes+1);
-	CTDB_NO_MEMORY(ctdb, nodep);
-
-	ctdb->nodes = nodep;
-	nodep = &ctdb->nodes[ctdb->num_nodes];
-	(*nodep) = talloc_zero(ctdb->nodes, struct ctdb_node);
-	CTDB_NO_MEMORY(ctdb, *nodep);
-	node = *nodep;
-	
-	if (ctdb_parse_address(ctdb, node, "0.0.0.0", &node->address) != 0) {
-		DEBUG(DEBUG_ERR,("Failed to setup deleted node %d\n", ctdb->num_nodes));
-		return -1;
-	}
-	node->ctdb = ctdb;
-	node->name = talloc_strdup(node, "0.0.0.0:0");
-
-	/* this assumes that the nodes are kept in sorted order, and no gaps */
-	node->pnn = ctdb->num_nodes;
-
-	/* this node is permanently deleted/disconnected */
-	node->flags = NODE_FLAGS_DELETED|NODE_FLAGS_DISCONNECTED;
-
-	ctdb->num_nodes++;
-	node->dead_count = 0;
-
-	return 0;
-}
-
-
-/*
-  setup the node list from a file
-*/
-static int ctdb_set_nlist(struct ctdb_context *ctdb, const char *nlist)
-{
-	char **lines;
-	int nlines;
-	int i, j, num_present;
-
-	talloc_free(ctdb->nodes);
-	ctdb->nodes     = NULL;
-	ctdb->num_nodes = 0;
-
-	lines = file_lines_load(nlist, &nlines, 0, ctdb);
-	if (lines == NULL) {
-		ctdb_set_error(ctdb, "Failed to load nlist '%s'\n", nlist);
-		return -1;
-	}
-	while (nlines > 0 && strcmp(lines[nlines-1], "") == 0) {
-		nlines--;
-	}
-
-	num_present = 0;
-	for (i=0; i < nlines; i++) {
-		char *node;
-		size_t len;
-
-		node = lines[i];
-		/* strip leading spaces */
-		while((*node == ' ') || (*node == '\t')) {
-			node++;
-		}
-		if (*node == '#') {
-			if (ctdb_add_deleted_node(ctdb) != 0) {
-				talloc_free(lines);
-				return -1;
-			}
-			continue;
-		}
-
-		/* strip trailing spaces */
-
-		len = strlen(node);
-
-		while ((len > 1) &&
-		       ((node[len-1] == ' ') || (node[len-1] == '\t')))
-		{
-			node[len-1] = '\0';
-			len--;
-		}
-
-		if (len == 0) {
-			continue;
-		}
-		if (ctdb_add_node(ctdb, node) != 0) {
-			talloc_free(lines);
-			return -1;
-		}
-		num_present++;
-	}
-
-	/* initialize the vnn mapping table now that we have the nodes list,
-	   skipping any deleted nodes
-	*/
-	ctdb->vnn_map = talloc(ctdb, struct ctdb_vnn_map);
-	CTDB_NO_MEMORY(ctdb, ctdb->vnn_map);
-
-	ctdb->vnn_map->generation = INVALID_GENERATION;
-	ctdb->vnn_map->size = num_present;
-	ctdb->vnn_map->map = talloc_array(ctdb->vnn_map, uint32_t, ctdb->vnn_map->size);
-	CTDB_NO_MEMORY(ctdb, ctdb->vnn_map->map);
-
-	for(i=0, j=0; i < ctdb->vnn_map->size; i++) {
-		if (ctdb->nodes[i]->flags & NODE_FLAGS_DELETED) {
-			continue;
-		}
-		ctdb->vnn_map->map[j] = i;
-		j++;
-	}
-	
-	talloc_free(lines);
-	return 0;
-}
-
+/* Load the nodes list from a file */
 void ctdb_load_nodes_file(struct ctdb_context *ctdb)
 {
+	struct ctdb_node_map_old *node_map;
 	int ret;
 
-	ret = ctdb_set_nlist(ctdb, ctdb->nodes_file);
-	if (ret == -1) {
-		DEBUG(DEBUG_ALERT,("ctdb_set_nlist failed - %s\n", ctdb_errstr(ctdb)));
-		exit(1);
+	node_map = ctdb_read_nodes_file(ctdb, ctdb->nodes_file);
+	if (node_map == NULL) {
+		goto fail;
 	}
+
+	TALLOC_FREE(ctdb->nodes);
+	ret = convert_node_map_to_list(ctdb, ctdb, node_map,
+				       &ctdb->nodes, &ctdb->num_nodes);
+	if (ret == -1) {
+		goto fail;
+	}
+
+	talloc_free(node_map);
+	return;
+
+fail:
+	DEBUG(DEBUG_ERR, ("Failed to load nodes file \"%s\"\n",
+			  ctdb->nodes_file));
+	talloc_free(node_map);
+	exit(1);
 }
 
 /*
@@ -258,13 +159,16 @@ void ctdb_load_nodes_file(struct ctdb_context *ctdb)
 */
 int ctdb_set_address(struct ctdb_context *ctdb, const char *address)
 {
-	if (ctdb_parse_address(ctdb, ctdb, address, &ctdb->address) != 0) {
+	ctdb->address = talloc(ctdb, ctdb_sock_addr);
+	CTDB_NO_MEMORY(ctdb, ctdb->address);
+
+	if (ctdb_parse_address(ctdb, address, ctdb->address) != 0) {
 		return -1;
 	}
-	
-	ctdb->name = talloc_asprintf(ctdb, "%s:%u", 
-				     ctdb->address.address, 
-				     ctdb->address.port);
+
+	ctdb->name = talloc_asprintf(ctdb, "%s:%u",
+				     ctdb_addr_to_str(ctdb->address),
+				     ctdb_addr_to_port(ctdb->address));
 	return 0;
 }
 
@@ -309,7 +213,7 @@ void ctdb_input_pkt(struct ctdb_context *ctdb, struct ctdb_req_header *hdr)
 	case CTDB_REPLY_CALL:
 	case CTDB_REQ_DMASTER:
 	case CTDB_REPLY_DMASTER:
-		/* we dont allow these calls when banned */
+		/* we don't allow these calls when banned */
 		if (ctdb->nodes[ctdb->pnn]->flags & NODE_FLAGS_BANNED) {
 			DEBUG(DEBUG_DEBUG,(__location__ " ctdb operation %u"
 				" request %u"
@@ -452,7 +356,8 @@ struct queue_next {
 /*
   triggered when a deferred packet is due
  */
-static void queue_next_trigger(struct event_context *ev, struct timed_event *te, 
+static void queue_next_trigger(struct tevent_context *ev,
+			       struct tevent_timer *te,
 			       struct timeval t, void *private_data)
 {
 	struct queue_next *q = talloc_get_type(private_data, struct queue_next);
@@ -482,7 +387,7 @@ static void ctdb_defer_packet(struct ctdb_context *ctdb, struct ctdb_req_header 
 	/* use this to put packets directly into our recv function */
 	ctdb_input_pkt(q->ctdb, q->hdr);
 #else
-	event_add_timed(ctdb->ev, q, timeval_zero(), queue_next_trigger, q);
+	tevent_add_timer(ctdb->ev, q, timeval_zero(), queue_next_trigger, q);
 #endif
 }
 

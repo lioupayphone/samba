@@ -17,14 +17,28 @@
    along with this program; if not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "includes.h"
+#include "replace.h"
 #include "system/filesys.h"
-#include "popt.h"
 #include "system/time.h"
 #include "system/wait.h"
 #include "system/network.h"
-#include "cmdline.h"
-#include "../include/ctdb_private.h"
+
+#include <popt.h>
+#include <talloc.h>
+/* Allow use of deprecated function tevent_loop_allow_nesting() */
+#define TEVENT_DEPRECATED
+#include <tevent.h>
+
+#include "lib/util/debug.h"
+#include "lib/util/samba_util.h"
+
+#include "ctdb_private.h"
+
+#include "common/reqid.h"
+#include "common/system.h"
+#include "common/cmdline.h"
+#include "common/common.h"
+#include "common/logging.h"
 
 static struct {
 	const char *nlist;
@@ -33,7 +47,7 @@ static struct {
 	const char *public_address_list;
 	const char *event_script_dir;
 	const char *notification_script;
-	const char *logfile;
+	const char *logging;
 	const char *recovery_lock_file;
 	const char *db_dir;
 	const char *db_dir_persistent;
@@ -42,7 +56,6 @@ static struct {
 	const char *single_public_ip;
 	int         valgrinding;
 	int         nosetsched;
-	int         use_syslog;
 	int         start_as_disabled;
 	int         start_as_stopped;
 	int         no_lmaster;
@@ -56,7 +69,7 @@ static struct {
 	.public_address_list = NULL,
 	.transport = "tcp",
 	.event_script_dir = NULL,
-	.logfile = LOGDIR "/log.ctdb",
+	.logging = "file:" LOGDIR "/log.ctdb",
 	.db_dir = CTDB_VARDIR,
 	.db_dir_persistent = CTDB_VARDIR "/persistent",
 	.db_dir_state = CTDB_VARDIR "/state",
@@ -79,7 +92,7 @@ static void ctdb_recv_pkt(struct ctdb_context *ctdb, uint8_t *data, uint32_t len
 	if (ctdb_validate_pnn(ctdb, hdr->srcnode)) {
 		/* as a special case, redirected calls don't increment the rx_cnt */
 		if (hdr->operation != CTDB_REQ_CALL ||
-		    ((struct ctdb_req_call *)hdr)->hopcount == 0) {
+		    ((struct ctdb_req_call_old *)hdr)->hopcount == 0) {
 			ctdb->nodes[hdr->srcnode]->rx_cnt++;
 		}
 	}
@@ -111,7 +124,7 @@ int main(int argc, const char *argv[])
 		{ "public-interface", 0, POPT_ARG_STRING, &options.public_interface, 0, "public interface", "interface"},
 		{ "single-public-ip", 0, POPT_ARG_STRING, &options.single_public_ip, 0, "single public ip", "ip-address"},
 		{ "event-script-dir", 0, POPT_ARG_STRING, &options.event_script_dir, 0, "event script directory", "dirname" },
-		{ "logfile", 0, POPT_ARG_STRING, &options.logfile, 0, "log file location", "filename" },
+		{ "logging", 0, POPT_ARG_STRING, &options.logging, 0, "logging method to be used", NULL },
 		{ "nlist", 0, POPT_ARG_STRING, &options.nlist, 0, "node list file", "filename" },
 		{ "notification-script", 0, POPT_ARG_STRING, &options.notification_script, 0, "notification script", "filename" },
 		{ "listen", 0, POPT_ARG_STRING, &options.myaddress, 0, "address to listen on", "address" },
@@ -123,7 +136,6 @@ int main(int argc, const char *argv[])
 		{ "pidfile", 0, POPT_ARG_STRING, &ctdbd_pidfile, 0, "location of PID file", "filename" },
 		{ "valgrinding", 0, POPT_ARG_NONE, &options.valgrinding, 0, "disable setscheduler SCHED_FIFO call, use mmap for tdbs", NULL },
 		{ "nosetsched", 0, POPT_ARG_NONE, &options.nosetsched, 0, "disable setscheduler SCHED_FIFO call, use mmap for tdbs", NULL },
-		{ "syslog", 0, POPT_ARG_NONE, &options.use_syslog, 0, "log messages to syslog", NULL },
 		{ "start-as-disabled", 0, POPT_ARG_NONE, &options.start_as_disabled, 0, "Node starts in disabled state", NULL },
 		{ "start-as-stopped", 0, POPT_ARG_NONE, &options.start_as_stopped, 0, "Node starts in stopped state", NULL },
 		{ "no-lmaster", 0, POPT_ARG_NONE, &options.no_lmaster, 0, "disable lmaster role on this node", NULL },
@@ -141,7 +153,7 @@ int main(int argc, const char *argv[])
 	const char **extra_argv;
 	int extra_argc = 0;
 	poptContext pc;
-	struct event_context *ev;
+	struct tevent_context *ev;
 
 	pc = poptGetContext(argv[0], argc, argv, popt_options, POPT_CONTEXT_KEEP_FIRST);
 
@@ -165,7 +177,7 @@ int main(int argc, const char *argv[])
 
 	fault_setup();
 
-	ev = event_context_init(NULL);
+	ev = tevent_context_init(NULL);
 	tevent_loop_allow_nesting(ev);
 
 	ctdb = ctdb_cmdline_init(ev);
@@ -175,10 +187,7 @@ int main(int argc, const char *argv[])
 
 	script_log_level = options.script_log_level;
 
-	ret = ctdb_set_logfile(ctdb, options.logfile, options.use_syslog);
-	if (ret == -1) {
-		printf("ctdb_set_logfile to %s failed - %s\n", 
-		       options.use_syslog?"syslog":options.logfile, ctdb_errstr(ctdb));
+	if (!ctdb_logging_init(ctdb, options.logging)) {
 		exit(1);
 	}
 
@@ -190,8 +199,13 @@ int main(int argc, const char *argv[])
 	ctdb->recovery_mode    = CTDB_RECOVERY_NORMAL;
 	ctdb->recovery_master  = (uint32_t)-1;
 	ctdb->upcalls          = &ctdb_upcalls;
-	ctdb->idr              = idr_init(ctdb);
 	ctdb->recovery_lock_fd = -1;
+
+	ret = reqid_init(ctdb, 0, &ctdb->idr);;
+	if (ret != 0) {
+		DEBUG(DEBUG_ALERT, ("reqid_init failed (%s)\n", strerror(ret)));
+		exit(1);
+	}
 
 	ctdb_tunables_set_defaults(ctdb);
 
@@ -217,12 +231,12 @@ int main(int argc, const char *argv[])
 	}
 
 	/* set ctdbd capabilities */
-	ctdb->capabilities = 0;
-	if (options.no_lmaster == 0) {
-		ctdb->capabilities |= CTDB_CAP_LMASTER;
+	ctdb->capabilities = CTDB_CAP_DEFAULT;
+	if (options.no_lmaster != 0) {
+		ctdb->capabilities &= ~CTDB_CAP_LMASTER;
 	}
-	if (options.no_recmaster == 0) {
-		ctdb->capabilities |= CTDB_CAP_RECMASTER;
+	if (options.no_recmaster != 0) {
+		ctdb->capabilities &= ~CTDB_CAP_RECMASTER;
 	}
 	if (options.lvs != 0) {
 		ctdb->capabilities |= CTDB_CAP_LVS;
@@ -318,5 +332,5 @@ int main(int argc, const char *argv[])
 	}
 
 	/* start the protocol running (as a child) */
-	return ctdb_start_daemon(ctdb, interactive?false:true, options.use_syslog);
+	return ctdb_start_daemon(ctdb, interactive?false:true);
 }
