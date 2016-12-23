@@ -168,7 +168,7 @@ bool make_user_info_netlogon_network(TALLOC_CTX *mem_ctx,
 				     const char *client_domain, 
 				     const char *workstation_name,
 				     const struct tsocket_address *remote_address,
-				     uint32 logon_parameters,
+				     uint32_t logon_parameters,
 				     const uchar *lm_network_pwd,
 				     int lm_pwd_len,
 				     const uchar *nt_network_pwd,
@@ -209,7 +209,7 @@ bool make_user_info_netlogon_interactive(TALLOC_CTX *mem_ctx,
 					 const char *client_domain, 
 					 const char *workstation_name,
 					 const struct tsocket_address *remote_address,
-					 uint32 logon_parameters,
+					 uint32_t logon_parameters,
 					 const uchar chal[8], 
 					 const uchar lm_interactive_pwd[16], 
 					 const uchar nt_interactive_pwd[16])
@@ -281,7 +281,7 @@ bool make_user_info_for_reply(TALLOC_CTX *mem_ctx,
 			      const char *smb_name, 
 			      const char *client_domain,
 			      const struct tsocket_address *remote_address,
-			      const uint8 chal[8],
+			      const uint8_t chal[8],
 			      DATA_BLOB plaintext_password)
 {
 
@@ -1422,8 +1422,8 @@ NTSTATUS make_server_info_info3(TALLOC_CTX *mem_ctx,
 		if (NT_STATUS_EQUAL(nt_status, NT_STATUS_NO_SUCH_USER) &&
 		    (lp_security() == SEC_ADS || lp_security() == SEC_DOMAIN) &&
 		    lp_map_to_guest() == MAP_TO_GUEST_ON_BAD_UID) {
-			DEBUG(2, ("Try to map %s to guest account",
-				  nt_username));
+			DBG_NOTICE("Try to map %s to guest account",
+				   nt_username);
 			nt_status = make_server_info_guest(tmp_ctx, &result);
 			if (NT_STATUS_IS_OK(nt_status)) {
 				*server_info = talloc_move(mem_ctx, &result);
@@ -1558,6 +1558,9 @@ bool is_trusted_domain(const char* dom_name)
 			/* winbind could not find the domain */
 			return false;
 		}
+
+		DEBUG(10, ("wb_is_trusted_domain returned error: %s\n",
+			  wbcErrorString(result)));
 
 		/* The only other possible result is that winbind is not up
 		   and running. We need to update the trustdom_cache

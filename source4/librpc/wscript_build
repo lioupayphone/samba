@@ -19,7 +19,6 @@ bld.SAMBA_SUBSYSTEM('NDR_IRPC',
 
 bld.SAMBA_SUBSYSTEM('NDR_SASL_HELPERS',
 	source='gen_ndr/ndr_sasl_helpers.c',
-	allow_warnings=True,
 	public_deps='ndr'
 	)
 
@@ -27,7 +26,6 @@ bld.SAMBA_SUBSYSTEM('NDR_SASL_HELPERS',
 
 bld.SAMBA_SUBSYSTEM('NDR_WINSIF',
 	source='gen_ndr/ndr_winsif.c',
-	allow_warnings=True,
 	public_deps='ndr'
 	)
 
@@ -46,7 +44,6 @@ bld.SAMBA_SUBSYSTEM('NDR_NTP_SIGND',
 
 bld.SAMBA_SUBSYSTEM('NDR_WINSREPL',
 	source='gen_ndr/ndr_winsrepl.c',
-	allow_warnings=True,
 	public_deps='ndr ndr_nbt'
 	)
 
@@ -82,7 +79,8 @@ bld.SAMBA_SUBSYSTEM('ndr-table',
         NDR_SASL_HELPERS NDR_NOTIFY NDR_WINBIND NDR_FRSRPC NDR_FRSAPI
         NDR_FRSTRANS NDR_NFS4ACL NDR_NTP_SIGND NDR_DCOM NDR_WMI
         NDR_NAMED_PIPE_AUTH NDR_NTLMSSP NDR_DFSBLOBS NDR_DNSP
-        NDR_NTPRINTING NDR_DNS NDR_BACKUPKEY NDR_PREG''',
+        NDR_NTPRINTING NDR_DNS NDR_BACKUPKEY NDR_PREG NDR_BKUPBLOBS NDR_FSCC
+        NDR_FRSBLOBS NDR_CLUSAPI''',
         depends_on='GEN_NDR_TABLES'
         )
 
@@ -101,17 +99,6 @@ bld.SAMBA_LIBRARY('dcerpc-samr',
 	header_path='gen_ndr'
 	)
 
-
-bld.SAMBA_LIBRARY('dcerpc-atsvc',
-	source='',
-	pc_files='dcerpc_atsvc.pc',
-	vnum='0.0.1',
-	public_deps='dcerpc ndr-standard RPC_NDR_ATSVC',
-	public_headers='../../librpc/gen_ndr/ndr_atsvc_c.h',
-	header_path='gen_ndr'
-	)
-
-
 bld.SAMBA_SUBSYSTEM('RPC_NDR_WINSIF',
 	source='gen_ndr/ndr_winsif_c.c',
 	public_deps='dcerpc NDR_WINSIF'
@@ -125,13 +112,9 @@ bld.SAMBA_LIBRARY('dcerpc',
 	rpc/dcerpc_connect.c rpc/dcerpc_secondary.c''',
 	pc_files='dcerpc.pc',
 	deps='samba_socket LIBCLI_RESOLVE LIBCLI_SMB LIBCLI_SMB2 ndr NDR_DCERPC RPC_NDR_EPMAPPER NDR_SCHANNEL RPC_NDR_NETLOGON RPC_NDR_MGMT gensec LIBCLI_AUTH smbclient-raw LP_RESOLVE tevent-util dcerpc-binding param_options http',
-	allow_warnings=True,
 	autoproto='rpc/dcerpc_proto.h',
 	public_deps='samba-credentials tevent talloc',
-	public_headers='''rpc/dcerpc.h ../../librpc/gen_ndr/mgmt.h
-	../../librpc/gen_ndr/ndr_mgmt.h ../../librpc/gen_ndr/ndr_mgmt_c.h
-	../../librpc/gen_ndr/epmapper.h ../../librpc/gen_ndr/ndr_epmapper.h
-	../../librpc/gen_ndr/ndr_epmapper_c.h''',
+	public_headers='''rpc/dcerpc.h''',
 	# It's very important to keep this form of construction
 	# it force the sambawaf extension to put everything that match the first element
 	# (*gen_ndr*) into the dir named by the second element (gen_ndr).
@@ -223,7 +206,7 @@ bld.SAMBA_PYTHON('python_mgmt',
 
 bld.SAMBA_PYTHON('python_atsvc',
 	source='../../librpc/gen_ndr/py_atsvc.c',
-	deps='dcerpc-atsvc pytalloc-util pyrpc_util',
+	deps='RPC_NDR_ATSVC pytalloc-util pyrpc_util',
 	realname='samba/dcerpc/atsvc.so'
 	)
 

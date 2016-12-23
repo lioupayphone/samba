@@ -54,7 +54,7 @@ void remove_all_servers(struct work_record *work)
 static void add_server_to_workgroup(struct work_record *work,
                              struct server_record *servrec)
 {
-	DLIST_ADD_END(work->serverlist, servrec, struct server_record *);
+	DLIST_ADD_END(work->serverlist, servrec);
 	work->subnet->work_changed = True;
 }
 
@@ -178,7 +178,7 @@ void expire_servers(struct work_record *work, time_t t)
  out this server record from an earlier subnet.
 ******************************************************************/
 
-static uint32 write_this_server_name( struct subnet_record *subrec,
+static uint32_t write_this_server_name( struct subnet_record *subrec,
                                       struct work_record *work,
                                       struct server_record *servrec)
 {
@@ -216,7 +216,7 @@ static uint32 write_this_server_name( struct subnet_record *subrec,
  broadcast subnets.
 ******************************************************************/
 
-static uint32 write_this_workgroup_name( struct subnet_record *subrec, 
+static uint32_t write_this_workgroup_name( struct subnet_record *subrec,
                                          struct work_record *work)
 {
 	struct subnet_record *ssub;
@@ -248,7 +248,7 @@ static uint32 write_this_workgroup_name( struct subnet_record *subrec,
   Write out the browse.dat file.
   ******************************************************************/
 
-void write_browse_list_entry(XFILE *fp, const char *name, uint32 rec_type,
+void write_browse_list_entry(XFILE *fp, const char *name, uint32_t rec_type,
 		const char *local_master_browser_name, const char *description)
 {
 	fstring tmp;
@@ -268,7 +268,7 @@ void write_browse_list(time_t t, bool force_write)
 	struct server_record *servrec;
 	char *fname;
 	char *fnamenew;
-	uint32 stype;
+	uint32_t stype;
 	int i;
 	XFILE *fp;
 	bool list_changed = force_write;
@@ -306,6 +306,7 @@ void write_browse_list(time_t t, bool force_write)
 	fnamenew = talloc_asprintf(ctx, "%s.",
 				fname);
 	if (!fnamenew) {
+		talloc_free(fname);
 		return;
 	}
 
@@ -314,6 +315,8 @@ void write_browse_list(time_t t, bool force_write)
 	if (!fp) {
 		DEBUG(0,("write_browse_list: Can't open file %s. Error was %s\n",
 			fnamenew,strerror(errno)));
+		talloc_free(fnamenew);
+		talloc_free(fname);
 		return;
 	}
 
@@ -326,6 +329,8 @@ void write_browse_list(time_t t, bool force_write)
 		DEBUG(0,("write_browse_list: Fatal error - cannot find my workgroup %s\n",
 			lp_workgroup()));
 		x_fclose(fp);
+		talloc_free(fnamenew);
+		talloc_free(fname);
 		return;
 	}
 
@@ -362,7 +367,7 @@ void write_browse_list(time_t t, bool force_write)
 
 		for (work = subrec->workgrouplist; work ; work = work->next) {
 			/* Write out a workgroup record for a workgroup. */
-			uint32 wg_type = write_this_workgroup_name( subrec, work);
+			uint32_t wg_type = write_this_workgroup_name( subrec, work);
 
 			if(wg_type) {
 				write_browse_list_entry(fp, work->work_group, wg_type,
@@ -373,7 +378,7 @@ void write_browse_list(time_t t, bool force_write)
 			/* Now write out any server records a workgroup may have. */
 
 			for (servrec = work->serverlist; servrec ; servrec = servrec->next) {
-				uint32 serv_type;
+				uint32_t serv_type;
 
 				/* We have already written our names here. */
 				if(is_myname(servrec->serv.name))
@@ -394,4 +399,6 @@ void write_browse_list(time_t t, bool force_write)
 	chmod(fnamenew,0644);
 	rename(fnamenew,fname);
 	DEBUG(3,("write_browse_list: Wrote browse list into file %s\n",fname));
+	talloc_free(fnamenew);
+	talloc_free(fname);
 }

@@ -59,6 +59,8 @@
 #define MSG_SRVID_SAMBA 0x0000000100000000LL
 
 #include "librpc/gen_ndr/server_id.h"
+#include "lib/util/data_blob.h"
+#include "system/network.h"
 
 #define MSG_BROADCAST_PID_STR	"0:0"
 
@@ -74,9 +76,9 @@ struct messaging_backend {
 	void *private_data;
 };
 
-NTSTATUS messaging_ctdbd_init(struct messaging_context *msg_ctx,
-			      TALLOC_CTX *mem_ctx,
-			      struct messaging_backend **presult);
+int messaging_ctdbd_init(struct messaging_context *msg_ctx,
+			 TALLOC_CTX *mem_ctx,
+			 struct messaging_backend **presult);
 struct ctdbd_connection *messaging_ctdbd_connection(void);
 
 bool message_send_all(struct messaging_context *msg_ctx,
@@ -89,6 +91,7 @@ struct messaging_context *messaging_init(TALLOC_CTX *mem_ctx,
 struct server_id messaging_server_id(const struct messaging_context *msg_ctx);
 struct tevent_context *messaging_tevent_context(
 	struct messaging_context *msg_ctx);
+struct server_id_db *messaging_names_db(struct messaging_context *msg_ctx);
 
 /*
  * re-init after a fork
@@ -122,12 +125,15 @@ NTSTATUS messaging_send(struct messaging_context *msg_ctx,
 NTSTATUS messaging_send_buf(struct messaging_context *msg_ctx,
 			    struct server_id server, uint32_t msg_type,
 			    const uint8_t *buf, size_t len);
+int messaging_send_iov_from(struct messaging_context *msg_ctx,
+			    struct server_id src, struct server_id dst,
+			    uint32_t msg_type,
+			    const struct iovec *iov, int iovlen,
+			    const int *fds, size_t num_fds);
 NTSTATUS messaging_send_iov(struct messaging_context *msg_ctx,
 			    struct server_id server, uint32_t msg_type,
 			    const struct iovec *iov, int iovlen,
 			    const int *fds, size_t num_fds);
-void messaging_dispatch_rec(struct messaging_context *msg_ctx,
-			    struct messaging_rec *rec);
 
 struct tevent_req *messaging_filtered_read_send(
 	TALLOC_CTX *mem_ctx, struct tevent_context *ev,
@@ -143,6 +149,14 @@ struct tevent_req *messaging_read_send(TALLOC_CTX *mem_ctx,
 				       uint32_t msg_type);
 int messaging_read_recv(struct tevent_req *req, TALLOC_CTX *mem_ctx,
 			struct messaging_rec **presult);
+
+struct tevent_req *messaging_handler_send(
+	TALLOC_CTX *mem_ctx, struct tevent_context *ev,
+	struct messaging_context *msg_ctx, uint32_t msg_type,
+	bool (*handler)(struct messaging_context *msg_ctx,
+			struct messaging_rec **rec, void *private_data),
+	void *private_data);
+int messaging_handler_recv(struct tevent_req *req);
 
 int messaging_cleanup(struct messaging_context *msg_ctx, pid_t pid);
 

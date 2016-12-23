@@ -22,17 +22,11 @@
 #include "smbd/globals.h"
 #include "../lib/util/memcache.h"
 #include "messages.h"
-#include "tdb_compat.h"
-
-int aio_pending_size = 100;	/* tevent supports 100 signals SA_SIGINFO */
-int outstanding_aio_calls = 0;
+#include <tdb.h>
 
 #ifdef USE_DMAPI
 struct smbd_dmapi_context *dmapi_ctx = NULL;
 #endif
-
-
-bool dfree_broken = false;
 
 /* how many write cache buffers have been allocated */
 unsigned int allocated_write_caches = 0;

@@ -18,13 +18,19 @@
    along with this program; if not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "includes.h"
+#include "replace.h"
 #include "system/filesys.h"
 #include "system/shmem.h"
+#include "system/network.h"
 
 #include <libgen.h>
 
-#include "ctdb_private.h"
+#include "lib/util/debug.h"
+
+#include "protocol/protocol.h"
+
+#include "common/logging.h"
+#include "common/system.h"
 
 #if HAVE_SCHED_H
 #include <sched.h>
@@ -156,6 +162,9 @@ bool parse_ipv4(const char *s, unsigned port, struct sockaddr_in *sin)
 		return false;
 	}
 
+#ifdef HAVE_SOCK_SIN_LEN
+	sin->sin_len = sizeof(*sin);
+#endif
 	return true;
 }
 
@@ -181,6 +190,9 @@ static bool parse_ipv6(const char *s, const char *ifaces, unsigned port, ctdb_so
 		saddr->ip6.sin6_scope_id = if_nametoindex(ifaces);
 	}
 
+#ifdef HAVE_SOCK_SIN_LEN
+	saddr->ip6.sin6_len = sizeof(*saddr);
+#endif
 	return true;
 }
 

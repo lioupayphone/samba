@@ -85,7 +85,9 @@ static ADS_STATUS ads_do_search_retry_internal(ADS_STRUCT *ads, const char *bind
 
 	while (--count) {
 
-		if (NT_STATUS_EQUAL(ads_ntstatus(status), NT_STATUS_IO_TIMEOUT) && ads->config.ldap_page_size >= 250) {
+		if (NT_STATUS_EQUAL(ads_ntstatus(status), NT_STATUS_IO_TIMEOUT) &&
+		    ads->config.ldap_page_size >= (lp_ldap_page_size() / 4) &&
+		    lp_ldap_page_size() > 4) {
 			int new_page_size = (ads->config.ldap_page_size / 2);
 			DEBUG(1, ("Reducing LDAP page size from %d to %d due to IO_TIMEOUT\n",
 				  ads->config.ldap_page_size, new_page_size));
@@ -214,20 +216,20 @@ static ADS_STATUS ads_do_search_retry_args(ADS_STRUCT *ads, const char *bind_pat
 	char *dn, *sid_string;
 	ADS_STATUS status;
 
-	sid_string = sid_binstring_hex(sid);
+	sid_string = sid_binstring_hex_talloc(talloc_tos(), sid);
 	if (sid_string == NULL) {
 		return ADS_ERROR(LDAP_NO_MEMORY);
 	}
 
 	if (!asprintf(&dn, "<SID=%s>", sid_string)) {
-		SAFE_FREE(sid_string);
+		TALLOC_FREE(sid_string);
 		return ADS_ERROR(LDAP_NO_MEMORY);
 	}
 
 	status = ads_do_search_retry(ads, dn, LDAP_SCOPE_BASE,
 				   "(objectclass=*)", attrs, res);
 	SAFE_FREE(dn);
-	SAFE_FREE(sid_string);
+	TALLOC_FREE(sid_string);
 	return status;
 }
 

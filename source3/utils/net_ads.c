@@ -99,7 +99,9 @@ static int net_ads_cldap_netlogon(struct net_context *c, ADS_STRUCT *ads)
 		   "\tHas a hardware clock:                       %s\n"
 		   "\tIs a non-domain NC serviced by LDAP server: %s\n"
 		   "\tIs NT6 DC that has some secrets:            %s\n"
-		   "\tIs NT6 DC that has all secrets:             %s\n"),
+		   "\tIs NT6 DC that has all secrets:             %s\n"
+		   "\tRuns Active Directory Web Services:         %s\n"
+		   "\tRuns on Windows 2012 or later:              %s\n"),
 		   (reply.server_type & NBT_SERVER_PDC) ? _("yes") : _("no"),
 		   (reply.server_type & NBT_SERVER_GC) ? _("yes") : _("no"),
 		   (reply.server_type & NBT_SERVER_LDAP) ? _("yes") : _("no"),
@@ -111,7 +113,9 @@ static int net_ads_cldap_netlogon(struct net_context *c, ADS_STRUCT *ads)
 		   (reply.server_type & NBT_SERVER_GOOD_TIMESERV) ? _("yes") : _("no"),
 		   (reply.server_type & NBT_SERVER_NDNC) ? _("yes") : _("no"),
 		   (reply.server_type & NBT_SERVER_SELECT_SECRET_DOMAIN_6) ? _("yes") : _("no"),
-		   (reply.server_type & NBT_SERVER_FULL_SECRET_DOMAIN_6) ? _("yes") : _("no"));
+		   (reply.server_type & NBT_SERVER_FULL_SECRET_DOMAIN_6) ? _("yes") : _("no"),
+		   (reply.server_type & NBT_SERVER_ADS_WEB_SERVICE) ? _("yes") : _("no"),
+		   (reply.server_type & NBT_SERVER_DS_8) ? _("yes") : _("no"));
 
 
 	printf(_("Forest:\t\t\t%s\n"), reply.forest);
@@ -173,6 +177,7 @@ static int net_ads_info(struct net_context *c, int argc, const char **argv)
 {
 	ADS_STRUCT *ads;
 	char addr[INET6_ADDRSTRLEN];
+	time_t pass_time;
 
 	if (c->display_usage) {
 		d_printf("%s\n"
@@ -202,6 +207,8 @@ static int net_ads_info(struct net_context *c, int argc, const char **argv)
 		d_fprintf( stderr, _("Failed to get server's current time!\n"));
 	}
 
+	pass_time = secrets_fetch_pass_last_set_time(ads->server.workgroup);
+
 	print_sockaddr(addr, sizeof(addr), &ads->ldap.ss);
 
 	d_printf(_("LDAP server: %s\n"), addr);
@@ -215,6 +222,9 @@ static int net_ads_info(struct net_context *c, int argc, const char **argv)
 	d_printf(_("KDC server: %s\n"), ads->auth.kdc_server );
 	d_printf(_("Server time offset: %d\n"), ads->auth.time_offset );
 
+	d_printf(_("Last machine account password change: %s\n"),
+		 http_timestring(talloc_tos(), pass_time));
+
 	ads_destroy(&ads);
 	return 0;
 }
@@ -226,7 +236,7 @@ static void use_in_memory_ccache(void) {
 }
 
 static ADS_STATUS ads_startup_int(struct net_context *c, bool only_own_domain,
-				  uint32 auth_flags, ADS_STRUCT **ads_ret)
+				  uint32_t auth_flags, ADS_STRUCT **ads_ret)
 {
 	ADS_STRUCT *ads = NULL;
 	ADS_STATUS status;
@@ -1139,7 +1149,6 @@ static NTSTATUS net_update_dns_internal(struct net_context *c,
 	NTSTATUS status = NT_STATUS_UNSUCCESSFUL;
 	DNS_ERROR dns_err;
 	fstring dns_server;
-	const char *dns_hosts_file;
 	const char *dnsdomain = NULL;
 	char *root_domain = NULL;
 
@@ -1151,9 +1160,10 @@ static NTSTATUS net_update_dns_internal(struct net_context *c,
 	}
 	dnsdomain++;
 
-	dns_hosts_file = lp_parm_const_string(-1, "resolv", "host file", NULL);
-	status = ads_dns_lookup_ns(ctx, dns_hosts_file,
-				   dnsdomain, &nameservers, &ns_count);
+	status = ads_dns_lookup_ns(ctx,
+				   dnsdomain,
+				   &nameservers,
+				   &ns_count);
 	if ( !NT_STATUS_IS_OK(status) || (ns_count == 0)) {
 		/* Child domains often do not have NS records.  Look
 		   for the NS record for the forest root domain
@@ -1191,8 +1201,10 @@ static NTSTATUS net_update_dns_internal(struct net_context *c,
 
 		/* try again for NS servers */
 
-		status = ads_dns_lookup_ns(ctx, dns_hosts_file, root_domain,
-					   &nameservers, &ns_count);
+		status = ads_dns_lookup_ns(ctx,
+					   root_domain,
+					   &nameservers,
+					   &ns_count);
 
 		if ( !NT_STATUS_IS_OK(status) || (ns_count == 0)) {
 			DEBUG(3,("net_update_dns_internal: Failed to find name server for the %s "
@@ -1306,23 +1318,29 @@ static NTSTATUS net_update_dns(struct net_context *c, TALLOC_CTX *mem_ctx, ADS_S
 
 static int net_ads_join_usage(struct net_context *c, int argc, const char **argv)
 {
-	d_printf(_("net ads join [options]\n"
+	d_printf(_("net ads join [--no-dns-updates] [options]\n"
 	           "Valid options:\n"));
-	d_printf(_("   createupn[=UPN]    Set the userPrincipalName attribute during the join.\n"
-		   "                      The deault UPN is in the form host/netbiosname@REALM.\n"));
-	d_printf(_("   createcomputer=OU  Precreate the computer account in a specific OU.\n"
-		   "                      The OU string read from top to bottom without RDNs and delimited by a '/'.\n"
-		   "                      E.g. \"createcomputer=Computers/Servers/Unix\"\n"
-		   "                      NB: A backslash '\\' is used as escape at multiple levels and may\n"
-		   "                          need to be doubled or even quadrupled.  It is not used as a separator.\n"));
-	d_printf(_("   machinepass=PASS   Set the machine password to a specific value during the join.\n"
-		   "                      The deault password is random.\n"));
-	d_printf(_("   osName=string      Set the operatingSystem attribute during the join.\n"));
-	d_printf(_("   osVer=string       Set the operatingSystemVersion attribute during the join.\n"
-		   "                      NB: osName and osVer must be specified together for either to take effect.\n"
-		   "                          Also, the operatingSystemService attribute is also set when along with\n"
-		   "                          the two other attributes.\n"));
-
+	d_printf(_("   createupn[=UPN]       Set the userPrincipalName attribute during the join.\n"
+		   "                         The default UPN is in the form host/netbiosname@REALM.\n"));
+	d_printf(_("   createcomputer=OU     Precreate the computer account in a specific OU.\n"
+		   "                         The OU string read from top to bottom without RDNs\n"
+		   "                         and delimited by a '/'.\n"
+		   "                         E.g. \"createcomputer=Computers/Servers/Unix\"\n"
+		   "                         NB: A backslash '\\' is used as escape at multiple\n"
+		   "                             levels and may need to be doubled or even\n"
+		   "                             quadrupled. It is not used as a separator.\n"));
+	d_printf(_("   machinepass=PASS      Set the machine password to a specific value during\n"
+		   "                         the join. The default password is random.\n"));
+	d_printf(_("   osName=string         Set the operatingSystem attribute during the join.\n"));
+	d_printf(_("   osVer=string          Set the operatingSystemVersion attribute during join.\n"
+		   "                         NB: osName and osVer must be specified together for\n"
+		   "                             either to take effect. The operatingSystemService\n"
+		   "                             attribute is then also set along with the two\n"
+		   "                             other attributes.\n"));
+	d_printf(_("   osServicePack=string  Set the operatingSystemServicePack attribute\n"
+		   "                         during the join.\n"
+		   "                         NB: If not specified then by default the samba\n"
+		   "                             version string is used instead.\n"));
 	return -1;
 }
 
@@ -1428,7 +1446,9 @@ int net_ads_join(struct net_context *c, int argc, const char **argv)
 	int i;
 	const char *os_name = NULL;
 	const char *os_version = NULL;
+	const char *os_servicepack = NULL;
 	bool modify_config = lp_config_backend_is_registry();
+	enum libnetjoin_JoinDomNameType domain_name_type = JoinDomNameTypeDNS;
 
 	if (c->display_usage)
 		return net_ads_join_usage(c, argc, argv);
@@ -1485,6 +1505,13 @@ int net_ads_join(struct net_context *c, int argc, const char **argv)
 				goto fail;
 			}
 		}
+		else if ( !strncasecmp_m(argv[i], "osServicePack", strlen("osServicePack")) ) {
+			if ( (os_servicepack = get_string_param(argv[i])) == NULL ) {
+				d_fprintf(stderr, _("Please supply a valid servicepack identifier.\n"));
+				werr = WERR_INVALID_PARAM;
+				goto fail;
+			}
+		}
 		else if ( !strncasecmp_m(argv[i], "machinepass", strlen("machinepass")) ) {
 			if ( (machine_password = get_string_param(argv[i])) == NULL ) {
 				d_fprintf(stderr, _("Please supply a valid password to set as trust account password.\n"));
@@ -1494,6 +1521,11 @@ int net_ads_join(struct net_context *c, int argc, const char **argv)
 		}
 		else {
 			domain = argv[i];
+			if (strchr(domain, '.') == NULL) {
+				domain_name_type = JoinDomNameTypeUnknown;
+			} else {
+				domain_name_type = JoinDomNameTypeDNS;
+			}
 		}
 	}
 
@@ -1513,11 +1545,13 @@ int net_ads_join(struct net_context *c, int argc, const char **argv)
 	/* Do the domain join here */
 
 	r->in.domain_name	= domain;
+	r->in.domain_name_type	= domain_name_type;
 	r->in.create_upn	= createupn;
 	r->in.upn		= machineupn;
 	r->in.account_ou	= create_in_ou;
 	r->in.os_name		= os_name;
 	r->in.os_version	= os_version;
+	r->in.os_servicepack	= os_servicepack;
 	r->in.dc_name		= c->opt_host;
 	r->in.admin_account	= c->opt_user_name;
 	r->in.admin_password	= net_prompt_pass(c, c->opt_user_name);
@@ -1534,6 +1568,7 @@ int net_ads_join(struct net_context *c, int argc, const char **argv)
 	if (W_ERROR_EQUAL(werr, WERR_DCNOTFOUND) &&
 	    strequal(domain, lp_realm())) {
 		r->in.domain_name = lp_workgroup();
+		r->in.domain_name_type = JoinDomNameTypeNBT;
 		werr = libnet_Join(ctx, r);
 	}
 	if (!W_ERROR_IS_OK(werr)) {
@@ -1561,12 +1596,20 @@ int net_ads_join(struct net_context *c, int argc, const char **argv)
 			r->out.netbios_domain_name);
 	}
 
+	/* print out informative error string in case there is one */
+	if (r->out.error_string != NULL) {
+		d_printf("%s\n", r->out.error_string);
+	}
+
 	/*
-	 * We try doing the dns update (if it was compiled in).
+	 * We try doing the dns update (if it was compiled in
+	 * and if it was not disabled on the command line).
 	 * If the dns update fails, we still consider the join
 	 * operation as succeeded if we came this far.
 	 */
-	_net_ads_join_dns_updates(c, ctx, r);
+	if (!c->opt_no_dns_updates) {
+		_net_ads_join_dns_updates(c, ctx, r);
+	}
 
 	TALLOC_FREE(r);
 	TALLOC_FREE( ctx );
@@ -1872,6 +1915,7 @@ static int net_ads_printer_publish(struct net_context *c, int argc, const char *
 	char *prt_dn, *srv_dn, **srv_cn;
 	char *srv_cn_escaped = NULL, *printername_escaped = NULL;
 	LDAPMessage *res = NULL;
+	bool ok;
 
 	if (argc < 1 || c->display_usage) {
 		d_printf("%s\n%s",
@@ -1899,7 +1943,14 @@ static int net_ads_printer_publish(struct net_context *c, int argc, const char *
 
 	/* Get printer data from SPOOLSS */
 
-	resolve_name(servername, &server_ss, 0x20, false);
+	ok = resolve_name(servername, &server_ss, 0x20, false);
+	if (!ok) {
+		d_fprintf(stderr, _("Could not find server %s\n"),
+			  servername);
+		ads_destroy(&ads);
+		talloc_destroy(mem_ctx);
+		return -1;
+	}
 
 	nt_status = cli_full_connection(&cli, lp_netbios_name(), servername,
 					&server_ss, 0,
@@ -2916,11 +2967,10 @@ static int net_ads_enctype_lookup_account(struct net_context *c,
 static void net_ads_enctype_dump_enctypes(const char *username,
 					  const char *enctype_str)
 {
-	int enctypes;
+	int enctypes = atoi(enctype_str);
 
-	d_printf(_("'%s' uses \"msDS-SupportedEncryptionTypes\":\n"), username);
-
-	enctypes = atoi(enctype_str);
+	d_printf(_("'%s' uses \"msDS-SupportedEncryptionTypes\": %d (0x%08x)\n"),
+		username, enctypes, enctypes);
 
 	printf("[%s] 0x%08x DES-CBC-CRC\n",
 		enctypes & ENC_CRC32 ? "X" : " ",

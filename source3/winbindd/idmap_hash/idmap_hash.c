@@ -113,9 +113,9 @@ static NTSTATUS idmap_hash_initialize(struct idmap_domain *dom)
 	int i;
 
 	if (!strequal(dom->name, "*")) {
-		DEBUG(0, ("Error: idmap_hash configured for domain '%s'. "
-			  "But the hash module can only be used for the default "
-			  "idmap configuration.\n", dom->name));
+		DBG_ERR("Error: idmap_hash configured for domain '%s'. "
+			"But the hash module can only be used for the default "
+			"idmap configuration.\n", dom->name);
 		return NT_STATUS_INVALID_PARAMETER;
 	}
 
@@ -160,10 +160,10 @@ static NTSTATUS idmap_hash_initialize(struct idmap_domain *dom)
 		if ((hash = hash_domain_sid(&dom_list[i].sid)) == 0)
 			continue;
 
-		DEBUG(3, ("Adding %s (%s) -> %d\n",
-			  dom_list[i].domain_name,
-			  sid_string_dbg(&dom_list[i].sid),
-			  hash));
+		DBG_INFO("Adding %s (%s) -> %d\n",
+			 dom_list[i].domain_name,
+			 sid_string_dbg(&dom_list[i].sid),
+			 hash);
 
 		hashed_domains[hash].sid = talloc(hashed_domains, struct dom_sid);
 		sid_copy(hashed_domains[hash].sid, &dom_list[i].sid);
@@ -386,6 +386,7 @@ static struct nss_info_methods hash_nss_methods = {
  state.
  **********************************************************************/
 
+static_decl_idmap;
 NTSTATUS idmap_hash_init(void)
 {
 	static NTSTATUS idmap_status = NT_STATUS_UNSUCCESSFUL;

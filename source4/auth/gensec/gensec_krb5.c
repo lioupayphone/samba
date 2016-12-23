@@ -285,9 +285,15 @@ static NTSTATUS gensec_krb5_common_client_creds(struct gensec_security *gensec_s
 	const char *error_string;
 	const char *principal;
 	const char *hostname;
-	krb5_data in_data;
+	krb5_data in_data = { .length = 0 };
+	krb5_data *in_data_p = NULL;
 	struct tevent_context *previous_ev;
 
+	if (lpcfg_parm_bool(gensec_security->settings->lp_ctx,
+			    NULL, "gensec_krb5", "send_authenticator_checksum", true)) {
+		in_data_p = &in_data;
+	}
+	
 	gensec_krb5_state = (struct gensec_krb5_state *)gensec_security->private_data;
 
 	principal = gensec_get_target_principal(gensec_security);
@@ -313,7 +319,6 @@ static NTSTATUS gensec_krb5_common_client_creds(struct gensec_security *gensec_s
 		DEBUG(1, ("gensec_krb5_start: Aquiring initiator credentials failed: %s\n", error_string));
 		return NT_STATUS_UNSUCCESSFUL;
 	}
-	in_data.length = 0;
 	
 	/* Do this every time, in case we have weird recursive issues here */
 	ret = smb_krb5_context_set_event_ctx(gensec_krb5_state->smb_krb5_context, ev, &previous_ev);
@@ -330,7 +335,7 @@ static NTSTATUS gensec_krb5_common_client_creds(struct gensec_security *gensec_s
 						&gensec_krb5_state->auth_context,
 						gensec_krb5_state->ap_req_options, 
 						target_principal,
-						&in_data, ccache_container->ccache, 
+						in_data_p, ccache_container->ccache, 
 						&gensec_krb5_state->enc_ticket);
 			krb5_free_principal(gensec_krb5_state->smb_krb5_context->krb5_context, 
 					    target_principal);
@@ -341,7 +346,7 @@ static NTSTATUS gensec_krb5_common_client_creds(struct gensec_security *gensec_s
 				  gensec_krb5_state->ap_req_options,
 				  gensec_get_target_service(gensec_security),
 				  hostname,
-				  &in_data, ccache_container->ccache, 
+				  in_data_p, ccache_container->ccache, 
 				  &gensec_krb5_state->enc_ticket);
 	}
 
@@ -591,6 +596,16 @@ static NTSTATUS gensec_krb5_update(struct gensec_security *gensec_security,
 		if (ret) {
 			DEBUG(2,("Failed to make credentials from principal: %s\n", error_string));
 			return NT_STATUS_CANT_ACCESS_DOMAIN_INFO;
+		}
+
+		if (keytab->password_based || obtained < CRED_SPECIFIED) {
+			/* 
+			 * Use match-by-key in this case (matches
+			 * cli_credentials_get_server_gss_creds()
+			 * behaviour).  No need to free the memory,
+			 * this is handled with a talloc destructor.
+			 */
+			server_in_keytab = NULL;
 		}
 
 		/* Parse the GSSAPI wrapping, if it's there... (win2k3 allows it to be omited) */
@@ -905,7 +920,7 @@ _PUBLIC_ NTSTATUS gensec_krb5_init(void)
 	ret = gensec_register(&gensec_fake_gssapi_krb5_security_ops);
 	if (!NT_STATUS_IS_OK(ret)) {
 		DEBUG(0,("Failed to register '%s' gensec backend!\n",
-			gensec_krb5_security_ops.name));
+			gensec_fake_gssapi_krb5_security_ops.name));
 		return ret;
 	}
 

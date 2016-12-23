@@ -801,7 +801,7 @@ static WERROR dsdb_syntax_NTTIME_validate_ldb(const struct dsdb_syntax_ctx *ctx,
 		}
 
 		if (attr->rangeUpper) {
-			if ((int32_t)t > (int32_t)*attr->rangeLower) {
+			if ((int32_t)t > (int32_t)*attr->rangeUpper) {
 				return WERR_DS_INVALID_ATTRIBUTE_SYNTAX;
 			}
 		}
@@ -2605,7 +2605,7 @@ static const struct dsdb_syntax dsdb_syntaxes[] = {
 	},{
 	/* not used in w2k3 schema */
 		.name			= "Object(Access-Point)",
-		.ldap_oid		= "1.3.6.1.4.1.1466.115.121.1.2",
+		.ldap_oid		= DSDB_SYNTAX_ACCESS_POINT,
 		.oMSyntax		= 127,
 		.oMObjectClass		= OMOBJECTCLASS("\x2b\x0c\x02\x87\x73\x1c\x00\x85\x3e"),
 		.attributeSyntax_oid	= "2.5.5.14",
@@ -2701,7 +2701,8 @@ WERROR dsdb_attribute_drsuapi_to_ldb(struct ldb_context *ldb,
 				     const struct dsdb_schema_prefixmap *pfm_remote,
 				     const struct drsuapi_DsReplicaAttribute *in,
 				     TALLOC_CTX *mem_ctx,
-				     struct ldb_message_element *out)
+				     struct ldb_message_element *out,
+				     enum drsuapi_DsAttributeId *local_attid_as_enum)
 {
 	const struct dsdb_attribute *sa;
 	struct dsdb_syntax_ctx syntax_ctx;
@@ -2735,6 +2736,15 @@ WERROR dsdb_attribute_drsuapi_to_ldb(struct ldb_context *ldb,
 	if (!sa) {
 		DEBUG(1,(__location__ ": Unknown attributeID_id 0x%08X\n", in->attid));
 		return WERR_DS_ATT_NOT_DEF_IN_SCHEMA;
+	}
+
+	/*
+	 * We return the same class of attid as we were given.  That
+	 * is, we trust the remote server not to use an
+	 * msDS-IntId value in the schema partition
+	 */
+	if (local_attid_as_enum != NULL) {
+		*local_attid_as_enum = (enum drsuapi_DsAttributeId)attid_local;
 	}
 
 	return sa->syntax->drsuapi_to_ldb(&syntax_ctx, sa, in, mem_ctx, out);

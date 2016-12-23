@@ -8,14 +8,14 @@ VERSION=None
 
 import sys, os, tempfile
 sys.path.insert(0, srcdir+"/buildtools/wafsamba")
-import wafsamba, Options, samba_dist, Scripting, Utils, samba_version
+import wafsamba, Options, samba_dist, samba_git, Scripting, Utils, samba_version
 
 
 samba_dist.DIST_DIRS('.')
 samba_dist.DIST_BLACKLIST('.gitignore .bzrignore source4/selftest/provisions')
 
 # install in /usr/local/samba by default
-Options.default_prefix = '/usr/local/samba'
+default_prefix = Options.default_prefix = '/usr/local/samba'
 
 # This callback optionally takes a list of paths as arguments:
 # --with-system_mitkrb5 /path/to/krb5 /another/path
@@ -37,7 +37,6 @@ def set_options(opt):
     opt.RECURSE('lib/replace')
     opt.RECURSE('dynconfig')
     opt.RECURSE('lib/ldb')
-    opt.RECURSE('lib/ntdb')
     opt.RECURSE('selftest')
     opt.RECURSE('source4/lib/tls')
     opt.RECURSE('pidl')
@@ -53,6 +52,14 @@ def set_options(opt):
     opt.add_option('--without-ad-dc',
                    help='disable AD DC functionality (enables Samba 4 client and Samba 3 code base).',
                    action='store_true', dest='without_ad_dc', default=False)
+
+    opt.add_option('--with-ntvfs-fileserver',
+                   help='enable the depricated NTVFS file server from the original Samba4 branch (default if --enable-selftest specicifed).  Conflicts with --with-system-mitkrb5 and --without-ad-dc',
+                   action='store_true', dest='with_ntvfs_fileserver')
+
+    opt.add_option('--without-ntvfs-fileserver',
+                   help='disable the depricated NTVFS file server from the original Samba4 branch',
+                   action='store_false', dest='with_ntvfs_fileserver')
 
     opt.add_option('--with-pie',
                   help=("Build Position Independent Executables " +
@@ -95,7 +102,7 @@ def configure(conf):
     conf.SAMBA_CHECK_PERL(mandatory=True)
     conf.find_program('xsltproc', var='XSLTPROC')
 
-    conf.SAMBA_CHECK_PYTHON(mandatory=True, version=(2,5,0))
+    conf.SAMBA_CHECK_PYTHON(mandatory=True, version=(2, 6, 0))
     conf.SAMBA_CHECK_PYTHON_HEADERS(mandatory=True)
 
     if sys.platform == 'darwin' and not conf.env['HAVE_ENVIRON_DECL']:
@@ -115,8 +122,7 @@ def configure(conf):
     conf.RECURSE('dynconfig')
 
     if conf.CHECK_FOR_THIRD_PARTY():
-        conf.RECURSE('third_party/zlib')
-        conf.RECURSE('third_party/popt')
+        conf.RECURSE('third_party')
     else:
         if not conf.CHECK_ZLIB():
             raise Utils.WafError('zlib development packages have not been found.\nIf third_party is installed, check that it is in the proper place.')
@@ -134,6 +140,7 @@ def configure(conf):
         conf.PROCESS_SEPARATE_RULE('system_mitkrb5')
     if not (Options.options.without_ad_dc or Options.options.with_system_mitkrb5):
         conf.DEFINE('AD_DC_BUILD_IS_ENABLED', 1)
+
     # Only process heimdal_build for non-MIT KRB5 builds
     # When MIT KRB5 checks are done as above, conf.env.KRB5_VENDOR will be set
     # to the lowcased output of 'krb5-config --vendor'.
@@ -144,23 +151,36 @@ def configure(conf):
     conf.RECURSE('source4/lib/tls')
     conf.RECURSE('source4/ntvfs/sysdep')
     conf.RECURSE('lib/util')
-    conf.RECURSE('lib/ccan')
-    conf.RECURSE('lib/ntdb')
     conf.RECURSE('lib/util/charset')
     conf.RECURSE('source4/auth')
-    conf.RECURSE('lib/nss_wrapper')
     conf.RECURSE('nsswitch')
-    conf.RECURSE('lib/socket_wrapper')
-    conf.RECURSE('lib/uid_wrapper')
-    conf.RECURSE('lib/subunit/c')
     conf.RECURSE('libcli/smbreadline')
     conf.RECURSE('lib/crypto')
     conf.RECURSE('pidl')
     conf.RECURSE('selftest')
+    if conf.CONFIG_GET('ENABLE_SELFTEST'):
+        conf.RECURSE('lib/nss_wrapper')
+        conf.RECURSE('lib/resolv_wrapper')
+        conf.RECURSE('lib/socket_wrapper')
+        conf.RECURSE('lib/uid_wrapper')
+        if Options.options.with_ntvfs_fileserver != False:
+            if not (Options.options.without_ad_dc or Options.options.with_system_mitkrb5):
+                conf.DEFINE('WITH_NTVFS_FILESERVER', 1)
+        if Options.options.with_ntvfs_fileserver == False:
+            if not (Options.options.without_ad_dc or Options.options.with_system_mitkrb5):
+                raise Utils.WafError('--without-ntvfs-fileserver conflicts with --enable-selftest while building the AD DC')
+
+    if Options.options.with_ntvfs_fileserver == True:
+        if Options.options.without_ad_dc:
+            raise Utils.WafError('--with-ntvfs-fileserver conflicts with --without-ad-dc')
+        if Options.options.with_system_mitkrb5:
+            raise Utils.WafError('--with-ntvfs-fileserver conflicts with --with-system-mitkrb5')
+        conf.DEFINE('WITH_NTVFS_FILESERVER', 1)
     conf.RECURSE('source3')
     conf.RECURSE('lib/texpect')
     if conf.env.with_ctdb:
         conf.RECURSE('ctdb')
+    conf.RECURSE('lib/socket')
 
     conf.SAMBA_CHECK_UNDEFINED_SYMBOL_FLAGS()
 
@@ -173,11 +193,6 @@ def configure(conf):
 
     if not conf.CHECK_NEED_LC("-lc not needed"):
         conf.ADD_LDFLAGS('-lc', testflags=False)
-
-    # we don't want PYTHONDIR in config.h, as otherwise changing
-    # --prefix causes a complete rebuild
-    del(conf.env.defines['PYTHONDIR'])
-    del(conf.env.defines['PYTHONARCHDIR'])
 
     if not conf.CHECK_CODE('#include "tests/summary.c"',
                            define='SUMMARY_PASSES',
@@ -193,7 +208,7 @@ def configure(conf):
                 need_pie = False
         if conf.check_cc(cflags='-fPIE', ldflags='-pie', mandatory=need_pie,
                          msg="Checking compiler for PIE support"):
-		conf.env['ENABLE_PIE'] = True
+            conf.env['ENABLE_PIE'] = True
 
     if Options.options.enable_relro != False:
         if Options.options.enable_relro == True:
@@ -227,26 +242,30 @@ def ctags(ctx):
     if os.WEXITSTATUS(status):
         raise Utils.WafError('ctags failed')
 
+
 # putting this here enabled build in the list
 # of commands in --help
 def build(bld):
     '''build all targets'''
     samba_version.load_version(env=bld.env, is_install=bld.is_install)
-    pass
 
 
 def pydoctor(ctx):
     '''build python apidocs'''
     bp = os.path.abspath('bin/python')
     mpaths = {}
-    for m in ['talloc', 'tdb', 'ldb', 'ntdb']:
+    modules = ['talloc', 'tdb', 'ldb']
+    for m in modules:
         f = os.popen("PYTHONPATH=%s python -c 'import %s; print %s.__file__'" % (bp, m, m), 'r')
         try:
             mpaths[m] = f.read().strip()
         finally:
             f.close()
-    cmd='PYTHONPATH=%s pydoctor --introspect-c-modules --project-name=Samba --project-url=http://www.samba.org --make-html --docformat=restructuredtext --add-package bin/python/samba --add-module %s --add-module %s --add-module %s' % (
-        bp, mpaths['tdb'], mpaths['ldb'], mpaths['talloc'], mpaths['ntdb'])
+    mpaths['main'] = bp
+    cmd = ('PYTHONPATH=%(main)s pydoctor --introspect-c-modules --project-name=Samba '
+           '--project-url=http://www.samba.org --make-html --docformat=restructuredtext '
+           '--add-package bin/python/samba ' + ''.join('--add-module %s ' % n for n in modules))
+    cmd = cmd % mpaths
     print("Running: %s" % cmd)
     status = os.system(cmd)
     if os.WEXITSTATUS(status):
@@ -319,6 +338,7 @@ def wildcard_cmd(cmd):
 
 def main():
     from samba_wildcard import wildcard_main
+
     wildcard_main(wildcard_cmd)
 Scripting.main = main
 
@@ -326,3 +346,10 @@ def reconfigure(ctx):
     '''reconfigure if config scripts have changed'''
     import samba_utils
     samba_utils.reconfigure(ctx)
+
+
+if os.path.isdir(os.path.join(srcdir, ".git")):
+    # Check if there are submodules that are checked out but out of date.
+    for submodule, status in samba_git.read_submodule_status(srcdir):
+        if status == "out-of-date":
+            raise Utils.WafError("some submodules are out of date. Please run 'git submodule update'")

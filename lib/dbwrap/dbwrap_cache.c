@@ -17,11 +17,12 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "includes.h"
-#include "lib/dbwrap/dbwrap.h"
+#include "replace.h"
+#include "lib/param/loadparm.h"
+#include "lib/dbwrap/dbwrap_cache.h"
 #include "lib/dbwrap/dbwrap_private.h"
 #include "lib/dbwrap/dbwrap_rbt.h"
-#include "lib/dbwrap/dbwrap_cache.h"
+#include "lib/util/talloc_stack.h"
 
 struct db_cache_ctx {
 	int seqnum;
@@ -178,12 +179,13 @@ static int dbwrap_cache_exists(struct db_context *db, TDB_DATA key)
 	return dbwrap_exists(ctx->backing, key);
 }
 
-static void dbwrap_cache_id(struct db_context *db, const uint8_t **id,
-			    size_t *idlen)
+static size_t dbwrap_cache_id(struct db_context *db, uint8_t *id,
+			      size_t idlen)
 {
 	struct db_cache_ctx *ctx = talloc_get_type_abort(
 		db->private_data, struct db_cache_ctx);
-	dbwrap_db_id(ctx->backing, id, idlen);
+
+	return dbwrap_db_id(ctx->backing, id, idlen);
 }
 
 struct db_context *db_open_cache(TALLOC_CTX *mem_ctx,
@@ -221,6 +223,5 @@ struct db_context *db_open_cache(TALLOC_CTX *mem_ctx,
 	db->exists = dbwrap_cache_exists;
 	db->id = dbwrap_cache_id;
 	db->name = dbwrap_name(ctx->backing);
-	db->hash_size = dbwrap_hash_size(ctx->backing);
 	return db;
 }

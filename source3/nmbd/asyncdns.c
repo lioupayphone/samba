@@ -19,6 +19,7 @@
 
 #include "includes.h"
 #include "nmbd/nmbd.h"
+#include "lib/util/sys_rw_data.h"
 
 /***************************************************************************
   Add a DNS result to the name cache.
@@ -90,7 +91,7 @@ static void asyncdns_process(void)
 	while (1) {
 		NTSTATUS status;
 
-		status = read_data(fd_in, (char *)&r, sizeof(r));
+		status = read_data_ntstatus(fd_in, (char *)&r, sizeof(r));
 
 		if (!NT_STATUS_IS_OK(status)) {
 			break;
@@ -166,7 +167,7 @@ void start_async_dns(struct messaging_context *msg)
 	CatchSignal(SIGHUP, SIG_IGN);
         CatchSignal(SIGTERM, sig_term);
 
-	status = reinit_after_fork(msg, nmbd_event_context(), true);
+	status = reinit_after_fork(msg, nmbd_event_context(), true, NULL);
 
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0,("reinit_after_fork() failed\n"));
@@ -219,7 +220,7 @@ void run_dns_queue(struct messaging_context *msg)
 		start_async_dns(msg);
 	}
 
-	status = read_data(fd_in, (char *)&r, sizeof(r));
+	status = read_data_ntstatus(fd_in, (char *)&r, sizeof(r));
 
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0, ("read from child failed: %s\n", nt_errstr(status)));

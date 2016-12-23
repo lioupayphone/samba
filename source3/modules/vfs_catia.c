@@ -141,6 +141,9 @@ static struct share_mapping_entry *add_srt(int snum, const char **mappings)
 
 	ret->snum = snum;
 
+	ret->next = srt_head;
+	srt_head = ret;
+
 	if (mappings) {
 		ret->mappings = (struct char_mappings**) ((unsigned char*) ret +
 		    sizeof(struct share_mapping_entry));
@@ -176,9 +179,6 @@ static struct share_mapping_entry *add_srt(int snum, const char **mappings)
 		}
 	}
 
-	ret->next = srt_head;
-	srt_head = ret;
-
 	return ret;
 }
 
@@ -210,7 +210,8 @@ static bool init_mappings(connection_struct *conn,
 	if (share_level->mappings) {
 		(*selected_out) = share_level;
 		return True;
-	} else if (global->mappings) {
+	}
+	if (global->mappings) {
 		share_level->mappings = global->mappings;
 		(*selected_out) = share_level;
 		return True;
@@ -270,7 +271,7 @@ static NTSTATUS catia_string_replace_allocate(connection_struct *conn,
 static DIR *catia_opendir(vfs_handle_struct *handle,
 				     const char *fname,
 				     const char *mask,
-				     uint32 attr)
+				     uint32_t attr)
 {
 	char *name_mapped = NULL;
 	NTSTATUS status;
@@ -778,7 +779,7 @@ catia_streaminfo(struct vfs_handle_struct *handle,
 static NTSTATUS
 catia_get_nt_acl(struct vfs_handle_struct *handle,
 		 const char *path,
-		 uint32 security_info,
+		 uint32_t security_info,
 		 TALLOC_CTX *mem_ctx,
 		 struct security_descriptor **ppdesc)
 {
@@ -1004,6 +1005,7 @@ static struct vfs_fn_pointers vfs_catia_fns = {
 	.setxattr_fn = catia_setxattr,
 };
 
+static_decl_vfs;
 NTSTATUS vfs_catia_init(void)
 {
 	NTSTATUS ret;

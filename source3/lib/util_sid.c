@@ -72,7 +72,7 @@ char *sid_string_tos(const struct dom_sid *sid)
  Write a sid out into on-the-wire format.
 *****************************************************************/  
 
-bool sid_linearize(char *outbuf, size_t len, const struct dom_sid *sid)
+bool sid_linearize(uint8_t *outbuf, size_t len, const struct dom_sid *sid)
 {
 	size_t i;
 
@@ -113,17 +113,12 @@ bool non_mappable_sid(struct dom_sid *sid)
  Caller must free.
 *****************************************************************/
 
-char *sid_binstring_hex(const struct dom_sid *sid)
+char *sid_binstring_hex_talloc(TALLOC_CTX *mem_ctx, const struct dom_sid *sid)
 {
-	char *buf, *s;
 	int len = ndr_size_dom_sid(sid, 0);
-	buf = (char *)SMB_MALLOC(len);
-	if (!buf)
-		return NULL;
+	uint8_t buf[len];
 	sid_linearize(buf, len, sid);
-	hex_encode((const unsigned char *)buf, len, &s);
-	free(buf);
-	return s;
+	return hex_encode_talloc(mem_ctx, buf, len);
 }
 
 NTSTATUS sid_array_from_info3(TALLOC_CTX *mem_ctx,
@@ -190,6 +185,11 @@ NTSTATUS sid_array_from_info3(TALLOC_CTX *mem_ctx,
          */
 
 	for (i = 0; i < info3->sidcount; i++) {
+
+		if (sid_check_is_in_asserted_identity(info3->sids[i].sid)) {
+			continue;
+		}
+
 		status = add_sid_to_array(mem_ctx, info3->sids[i].sid,
 				      &sid_array, &num_sids);
 		if (!NT_STATUS_IS_OK(status)) {

@@ -286,7 +286,7 @@ static void get_credentials_file(struct user_auth_info *auth_info,
 {
 	XFILE *auth;
 	fstring buf;
-	uint16 len = 0;
+	uint16_t len = 0;
 	char *ptr, *val, *param;
 
 	if ((auth=x_fopen(file, O_RDONLY, 0)) == NULL)
@@ -353,8 +353,11 @@ static void popt_common_credentials_callback(poptContext con,
 					const struct poptOption *opt,
 					const char *arg, const void *data)
 {
-	struct user_auth_info *auth_info = talloc_get_type_abort(
-		*((const char **)data), struct user_auth_info);
+	const void **pp = discard_const(data);
+	void *p = discard_const(*pp);
+	struct user_auth_info *auth_info =
+		talloc_get_type_abort(p,
+		struct user_auth_info);
 
 	if (reason == POPT_CALLBACK_REASON_PRE) {
 		set_cmdline_auth_info_username(auth_info, "GUEST");
@@ -365,11 +368,8 @@ static void popt_common_credentials_callback(poptContext con,
 		}
 
 		if (getenv("USER")) {
-			char *puser = SMB_STRDUP(getenv("USER"));
-			if (!puser) {
-				exit(ENOMEM);
-			}
-			set_cmdline_auth_info_username(auth_info, puser);
+			set_cmdline_auth_info_username(auth_info,
+						       getenv("USER"));
 		}
 
 		if (getenv("PASSWD")) {
@@ -501,14 +501,14 @@ void popt_burn_cmdline_password(int argc, char *argv[])
 struct poptOption popt_common_credentials[] = {
 	{ NULL, 0, POPT_ARG_CALLBACK|POPT_CBFLAG_PRE,
 	  (void *)popt_common_credentials_callback, 0,
-	  (const char *)&global_auth_info },
+	  (const void *)&global_auth_info },
 	{ "user", 'U', POPT_ARG_STRING, NULL, 'U', "Set the network username", "USERNAME" },
 	{ "no-pass", 'N', POPT_ARG_NONE, NULL, 'N', "Don't ask for a password" },
 	{ "kerberos", 'k', POPT_ARG_NONE, NULL, 'k', "Use kerberos (active directory) authentication" },
 	{ "authentication-file", 'A', POPT_ARG_STRING, NULL, 'A', "Get the credentials from a file", "FILE" },
 	{ "signing", 'S', POPT_ARG_STRING, NULL, 'S', "Set the client signing state", "on|off|required" },
 	{"machine-pass", 'P', POPT_ARG_NONE, NULL, 'P', "Use stored machine account password" },
-	{"encrypt", 'e', POPT_ARG_NONE, NULL, 'e', "Encrypt SMB transport (UNIX extended servers only)" },
+	{"encrypt", 'e', POPT_ARG_NONE, NULL, 'e', "Encrypt SMB transport" },
 	{"use-ccache", 'C', POPT_ARG_NONE, NULL, 'C',
 	 "Use the winbind ccache for authentication" },
 	{"pw-nt-hash", '\0', POPT_ARG_NONE, NULL, 'H',

@@ -65,59 +65,110 @@ char *server_id_str_buf(struct server_id id, struct server_id_buf *dst)
 	return dst->buf;
 }
 
-char *server_id_str(TALLOC_CTX *mem_ctx, const struct server_id *id)
+size_t server_id_str_buf_unique(struct server_id id, char *buf, size_t buflen)
 {
-	struct server_id_buf tmp;
-	char *result;
+	struct server_id_buf idbuf;
+	char unique_buf[21];	/* 2^64 is 18446744073709551616, 20 chars */
+	size_t idlen, unique_len, needed;
 
-	result = talloc_strdup(mem_ctx, server_id_str_buf(*id, &tmp));
-	if (result == NULL) {
-		return NULL;
+	server_id_str_buf(id, &idbuf);
+
+	idlen = strlen(idbuf.buf);
+	unique_len = snprintf(unique_buf, sizeof(unique_buf), "%"PRIu64,
+			      id.unique_id);
+	needed = idlen + unique_len + 2;
+
+	if (buflen >= needed) {
+		memcpy(buf, idbuf.buf, idlen);
+		buf[idlen] = '/';
+		memcpy(buf + idlen + 1, unique_buf, unique_len+1);
 	}
 
-	/*
-	 * beautify the talloc_report output
-	 */
-	talloc_set_name_const(result, result);
-	return result;
+	return needed;
 }
 
 struct server_id server_id_from_string(uint32_t local_vnn,
 				       const char *pid_string)
 {
+	struct server_id templ = {
+		.vnn = NONCLUSTER_VNN, .pid = UINT64_MAX
+	};
 	struct server_id result;
-	unsigned long long pid;
-	unsigned int vnn, task_id = 0;
-
-	ZERO_STRUCT(result);
+	int ret;
 
 	/*
 	 * We accept various forms with 1, 2 or 3 component forms
-	 * because the server_id_str() can print different forms, and
+	 * because the server_id_str_buf() can print different forms, and
 	 * we want backwards compatibility for scripts that may call
 	 * smbclient.
 	 */
-	if (sscanf(pid_string, "%u:%llu.%u", &vnn, &pid, &task_id) == 3) {
-		result.vnn = vnn;
-		result.pid = pid;
-		result.task_id = task_id;
-	} else if (sscanf(pid_string, "%u:%llu", &vnn, &pid) == 2) {
-		result.vnn = vnn;
-		result.pid = pid;
-	} else if (sscanf(pid_string, "%llu.%u", &pid, &task_id) == 2) {
-		result.vnn = local_vnn;
-		result.pid = pid;
-		result.task_id = task_id;
-	} else if (sscanf(pid_string, "%llu", &pid) == 1) {
-		result.vnn = local_vnn;
-		result.pid = pid;
-	} else if (strcmp(pid_string, "disconnected") ==0) {
-		server_id_set_disconnected(&result);
-	} else {
-		result.vnn = NONCLUSTER_VNN;
-		result.pid = UINT64_MAX;
+
+	result = templ;
+	ret = sscanf(pid_string, "%"SCNu32":%"SCNu64".%"SCNu32"/%"SCNu64,
+		     &result.vnn, &result.pid, &result.task_id,
+		     &result.unique_id);
+	if (ret == 4) {
+		return result;
 	}
-	return result;
+
+	result = templ;
+	ret = sscanf(pid_string, "%"SCNu32":%"SCNu64".%"SCNu32,
+		     &result.vnn, &result.pid, &result.task_id);
+	if (ret == 3) {
+		return result;
+	}
+
+	result = templ;
+	ret = sscanf(pid_string, "%"SCNu32":%"SCNu64"/%"SCNu64,
+		     &result.vnn, &result.pid, &result.unique_id);
+	if (ret == 3) {
+		return result;
+	}
+
+	result = templ;
+	ret = sscanf(pid_string, "%"SCNu32":%"SCNu64,
+		     &result.vnn, &result.pid);
+	if (ret == 2) {
+		return result;
+	}
+
+	result = templ;
+	ret = sscanf(pid_string, "%"SCNu64".%"SCNu32"/%"SCNu64,
+		     &result.pid, &result.task_id, &result.unique_id);
+	if (ret == 3) {
+		result.vnn = local_vnn;
+		return result;
+	}
+
+	result = templ;
+	ret = sscanf(pid_string, "%"SCNu64".%"SCNu32,
+		     &result.pid, &result.task_id);
+	if (ret == 2) {
+		result.vnn = local_vnn;
+		return result;
+	}
+
+	result = templ;
+	ret = sscanf(pid_string, "%"SCNu64"/%"SCNu64,
+		     &result.pid, &result.unique_id);
+	if (ret == 2) {
+		result.vnn = local_vnn;
+		return result;
+	}
+
+	result = templ;
+	ret = sscanf(pid_string, "%"SCNu64, &result.pid);
+	if (ret == 1) {
+		result.vnn = local_vnn;
+		return result;
+	}
+
+	if (strcmp(pid_string, "disconnected") == 0) {
+		server_id_set_disconnected(&result);
+		return result;
+	}
+
+	return templ;
 }
 
 /**
@@ -149,4 +200,20 @@ bool server_id_is_disconnected(const struct server_id *id)
 	server_id_set_disconnected(&dis);
 
 	return server_id_equal(id, &dis);
+}
+
+void server_id_put(uint8_t buf[24], const struct server_id id)
+{
+	SBVAL(buf, 0,  id.pid);
+	SIVAL(buf, 8,  id.task_id);
+	SIVAL(buf, 12, id.vnn);
+	SBVAL(buf, 16, id.unique_id);
+}
+
+void server_id_get(struct server_id *id, const uint8_t buf[24])
+{
+	id->pid       = BVAL(buf, 0);
+	id->task_id   = IVAL(buf, 8);
+	id->vnn       = IVAL(buf, 12);
+	id->unique_id = BVAL(buf, 16);
 }

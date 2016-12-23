@@ -452,7 +452,7 @@ static NTSTATUS smb2srv_reply(struct smb2srv_request *req)
 	case SMB2_OP_KEEPALIVE:
 		smb2srv_keepalive_recv(req);
 		return NT_STATUS_OK;
-	case SMB2_OP_FIND:
+	case SMB2_OP_QUERY_DIRECTORY:
 		if (!req->session) goto nosession;
 		if (!req->tcon)	goto notcon;
 		smb2srv_find_recv(req);
@@ -618,7 +618,7 @@ NTSTATUS smb2srv_queue_pending(struct smb2srv_request *req)
 		return NT_STATUS_INSUFFICIENT_RESOURCES;
 	}
 
-	DLIST_ADD_END(req->smb_conn->requests2.list, req, struct smb2srv_request *);
+	DLIST_ADD_END(req->smb_conn->requests2.list, req);
 	req->pending_id = id;
 
 	talloc_set_destructor(req, smb2srv_request_deny_destructor);

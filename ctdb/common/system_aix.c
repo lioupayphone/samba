@@ -19,11 +19,15 @@
 */
 
 
-#include "includes.h"
+#include "replace.h"
 #include "system/network.h"
 #include "system/filesys.h"
 #include "system/wait.h"
-#include "../include/ctdb_private.h"
+
+#include "lib/util/debug.h"
+
+#include "protocol/protocol.h"
+
 #include <netinet/if_ether.h>
 #include <netinet/ip6.h>
 #include <net/if_arp.h>
@@ -31,6 +35,8 @@
 #include <sys/kinfo.h>
 #include <pcap.h>
 
+#include "common/logging.h"
+#include "common/system.h"
 
 
 #if 0
@@ -44,7 +50,7 @@ int ctdb_sys_open_sending_socket(void)
 	int s, ret;
 	uint32_t one = 1;
 
-	s = socket(AF_INET, SOCK_RAW, htons(IPPROTO_RAW));
+	s = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
 	if (s == -1) {
 		DEBUG(DEBUG_CRIT,(" failed to open raw socket (%s)\n",
 			 strerror(errno)));
@@ -121,7 +127,7 @@ int ctdb_sys_send_tcp(const ctdb_sock_addr *dest,
 
 
 
-	s = socket(AF_INET, SOCK_RAW, htons(IPPROTO_RAW));
+	s = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
 	if (s == -1) {
 		DEBUG(DEBUG_CRIT,(" failed to open raw socket (%s)\n",
 			 strerror(errno)));
@@ -206,7 +212,7 @@ int ctdb_sys_close_capture_socket(void *private_data)
  */
 int ctdb_sys_send_arp(const ctdb_sock_addr *addr, const char *iface)
 {
-	/* FIXME AIX: We dont do gratuitous arp yet */
+	/* FIXME AIX: We don't do gratuitous arp yet */
 	return -1;
 }
 
@@ -372,28 +378,4 @@ int ctdb_get_peer_pid(const int fd, pid_t *peer_pid)
 		*peer_pid = cr.pid;
 	}
 	return ret;
-}
-
-char *ctdb_get_process_name(pid_t pid)
-{
-	/* FIXME AIX: get_process_name not implemented */
-	return NULL;
-}
-
-int ctdb_set_process_name(const char *name)
-{
-	/* FIXME AIX: set_process_name not implemented */
-	return -ENOSYS;
-}
-
-bool ctdb_get_lock_info(pid_t req_pid, struct ctdb_lock_info *lock_info)
-{
-	/* FIXME AIX: get_lock_info not implemented */
-	return false;
-}
-
-bool ctdb_get_blocker_pid(struct ctdb_lock_info *reqlock, pid_t *blocker_pid)
-{
-	/* FIXME AIX: get_blocker_pid not implemented */
-	return false;
 }

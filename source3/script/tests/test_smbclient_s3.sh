@@ -212,7 +212,7 @@ mkdir a_test_dir
 quit
 EOF
 
-    cmd='CLI_FORCE_INTERACTIVE=yes $SMBCLIENT -U% //$SERVER/$1" -I $SERVER_IP $ADDARGS < $tmpfile 2>&1'
+    cmd='CLI_FORCE_INTERACTIVE=yes $SMBCLIENT -U% "//$SERVER/$1" -I $SERVER_IP $ADDARGS < $tmpfile 2>&1'
     eval echo "$cmd"
     out=`eval $cmd`
     ret=$?
@@ -896,6 +896,81 @@ EOF
     fi
 }
 
+# Test using scopy to copy a file on the server.
+test_scopy()
+{
+    tmpfile=$PREFIX/smbclient_interactive_prompt_commands
+    scopy_file=$PREFIX/scopy_file
+
+    rm -f $scopy_file
+    cat > $tmpfile <<EOF
+put ${SMBCLIENT}
+scopy smbclient scopy_file
+lcd ${PREFIX}
+get scopy_file
+del smbclient
+del scopy_file
+quit
+EOF
+    cmd='CLI_FORCE_INTERACTIVE=yes $SMBCLIENT "$@" -mSMB3 -U$USERNAME%$PASSWORD //$SERVER/tmp -I $SERVER_IP $ADDARGS < $tmpfile 2>&1'
+    eval echo "$cmd"
+    out=`eval $cmd`
+    ret=$?
+    out1=`md5sum ${SMBCLIENT} | sed -e 's/ .*//'`
+    out2=`md5sum ${scopy_file} | sed -e 's/ .*//'`
+    rm -f $tmpfile
+    rm -f $scopy_file
+
+    if [ $ret != 0 ] ; then
+	echo "$out"
+	echo "failed scopy test (1) with output $ret"
+	false
+	return
+    fi
+
+    if [ $out1 != $out2 ] ; then
+	echo "$out1 $out2"
+	echo "failed md5sum (1)"
+	false
+    fi
+
+#
+# Now do again using SMB1
+# to force client-side fallback.
+#
+
+    cat > $tmpfile <<EOF
+put ${SMBCLIENT}
+scopy smbclient scopy_file
+lcd ${PREFIX}
+get scopy_file
+del smbclient
+del scopy_file
+quit
+EOF
+    cmd='CLI_FORCE_INTERACTIVE=yes $SMBCLIENT "$@" -mNT1 -U$USERNAME%$PASSWORD //$SERVER/tmp -I $SERVER_IP $ADDARGS < $tmpfile 2>&1'
+    eval echo "$cmd"
+    out=`eval $cmd`
+    ret=$?
+    out1=`md5sum ${SMBCLIENT} | sed -e 's/ .*//'`
+    out2=`md5sum ${scopy_file} | sed -e 's/ .*//'`
+    rm -f $tmpfile
+    rm -f $scopy_file
+
+    if [ $ret != 0 ] ; then
+	echo "$out"
+	echo "failed scopy test (2) with output $ret"
+	false
+	return
+    fi
+
+    if [ $out1 != $out2 ] ; then
+	echo "$out1 $out2"
+	echo "failed md5sum (2)"
+	false
+    fi
+}
+
 # Test creating a stream on the root of the share directory filname - :foobar
 test_toplevel_stream()
 {
@@ -928,6 +1003,62 @@ EOF
     fi
 }
 
+# Test wide links are restricted.
+test_widelinks()
+{
+    tmpfile=$PREFIX/smbclient_interactive_prompt_commands
+    cat > $tmpfile <<EOF
+cd dot
+ls
+quit
+EOF
+    cmd='CLI_FORCE_INTERACTIVE=yes $SMBCLIENT "$@" -U$USERNAME%$PASSWORD //$SERVER/widelinks_share -I $SERVER_IP $ADDARGS < $tmpfile 2>&1'
+    eval echo "$cmd"
+    out=`eval $cmd`
+    ret=$?
+    rm -f $tmpfile
+
+    if [ $ret != 0 ] ; then
+	echo "$out"
+	echo "failed accessing widelinks_share with error $ret"
+	false
+	return
+    fi
+
+    echo "$out" | grep 'NT_STATUS'
+    ret=$?
+    if [ $ret == 0 ] ; then
+	echo "$out"
+	echo "failed - NT_STATUS_XXXX listing \\widelinks_share\\dot"
+	false
+    fi
+
+    cat > $tmpfile <<EOF
+allinfo source
+quit
+EOF
+    cmd='CLI_FORCE_INTERACTIVE=yes $SMBCLIENT "$@" -U$USERNAME%$PASSWORD //$SERVER/widelinks_share -I $SERVER_IP $ADDARGS < $tmpfile 2>&1'
+    eval echo "$cmd"
+    out=`eval $cmd`
+    ret=$?
+    rm -f $tmpfile
+
+    if [ $ret != 0 ] ; then
+	echo "$out"
+	echo "failed accessing widelinks_share with error $ret"
+	false
+	return
+    fi
+
+# This should fail with NT_STATUS_ACCESS_DENIED
+    echo "$out" | grep 'NT_STATUS_ACCESS_DENIED'
+    ret=$?
+    if [ $ret != 0 ] ; then
+	echo "$out"
+	echo "failed - should get NT_STATUS_ACCESS_DENIED listing \\widelinks_share\\source"
+	false
+    fi
+}
 
 LOGDIR_PREFIX=test_smbclient_s3
 
@@ -1012,8 +1143,16 @@ testit "list a share with a mangled name + acl_xattr object" \
     test_mangled_names || \
     failed=`expr $failed + 1`
 
+testit "server-side file copy" \
+    test_scopy || \
+    failed=`expr $failed + 1`
+
 testit "creating a :stream at root of share" \
     test_toplevel_stream || \
+    failed=`expr $failed + 1`
+
+testit "Ensure widelinks are restricted" \
+    test_widelinks || \
     failed=`expr $failed + 1`
 
 testit "rm -rf $LOGDIR" \

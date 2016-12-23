@@ -21,14 +21,14 @@
 #include <Python.h>
 #include "includes.h"
 #include "system/filesys.h"
-#include "tdb_compat.h"
+#include <tdb.h>
 #include "lib/tdb_wrap/tdb_wrap.h"
 #include "librpc/ndr/libndr.h"
 #include "ntvfs/posix/posix_eadb.h"
 #include "libcli/util/pyerrors.h"
 #include "param/pyparam.h"
 
-void initxattr_tdb(void);
+void initposix_eadb(void);
 
 static PyObject *py_is_xattr_supported(PyObject *self)
 {
@@ -39,7 +39,7 @@ static PyObject *py_wrap_setxattr(PyObject *self, PyObject *args)
 {
 	char *filename, *attribute, *tdbname;
 	DATA_BLOB blob;
-	int blobsize;
+	Py_ssize_t blobsize;
 	NTSTATUS status;
 	TALLOC_CTX *mem_ctx;
 	struct tdb_wrap *eadb;
@@ -110,7 +110,7 @@ static PyObject *py_wrap_getxattr(PyObject *self, PyObject *args)
 static PyMethodDef py_posix_eadb_methods[] = {
 	{ "wrap_getxattr", (PyCFunction)py_wrap_getxattr, METH_VARARGS,
 		"wrap_getxattr(filename,attribute) -> blob\n"
-		"Retreive given attribute on the given file." },
+		"Retrieve given attribute on the given file." },
 	{ "wrap_setxattr", (PyCFunction)py_wrap_setxattr, METH_VARARGS,
 		"wrap_setxattr(filename,attribute,value)\n"
 		"Set the given attribute to the given value on the given file." },

@@ -92,11 +92,13 @@
 #define DEFAULT_QUOTA_GID_NOLIMIT(handle) \
 	lp_parm_bool(SNUM((handle)->conn),DEFAULT_QUOTA_NAME,"gid nolimit",DEFAULT_QUOTA_GID_NOLIMIT_DEFAULT)
 
-static int default_quota_get_quota(vfs_handle_struct *handle, enum SMB_QUOTA_TYPE qtype, unid_t id, SMB_DISK_QUOTA *dq)
+static int default_quota_get_quota(vfs_handle_struct *handle, const char *path,
+				   enum SMB_QUOTA_TYPE qtype, unid_t id,
+				   SMB_DISK_QUOTA *dq)
 {
 	int ret = -1;
 
-	if ((ret=SMB_VFS_NEXT_GET_QUOTA(handle, qtype, id, dq))!=0) {
+	if ((ret = SMB_VFS_NEXT_GET_QUOTA(handle, path, qtype, id, dq)) != 0) {
 		return ret;
 	}
 
@@ -120,9 +122,10 @@ static int default_quota_get_quota(vfs_handle_struct *handle, enum SMB_QUOTA_TYP
 		case SMB_USER_FS_QUOTA_TYPE:
 			{
 				unid_t qid;
-				uint32 qflags = dq->qflags;
+				uint32_t qflags = dq->qflags;
 				qid.uid = DEFAULT_QUOTA_UID(handle);
-				SMB_VFS_NEXT_GET_QUOTA(handle, SMB_USER_QUOTA_TYPE, qid, dq);
+				SMB_VFS_NEXT_GET_QUOTA(
+				    handle, path, SMB_USER_QUOTA_TYPE, qid, dq);
 				dq->qflags = qflags;
 			}
 			break;
@@ -130,9 +133,11 @@ static int default_quota_get_quota(vfs_handle_struct *handle, enum SMB_QUOTA_TYP
 		case SMB_GROUP_FS_QUOTA_TYPE:
 			{
 				unid_t qid;
-				uint32 qflags = dq->qflags;
+				uint32_t qflags = dq->qflags;
 				qid.gid = DEFAULT_QUOTA_GID(handle);
-				SMB_VFS_NEXT_GET_QUOTA(handle, SMB_GROUP_QUOTA_TYPE, qid, dq);
+				SMB_VFS_NEXT_GET_QUOTA(handle, path,
+						       SMB_GROUP_QUOTA_TYPE,
+						       qid, dq);
 				dq->qflags = qflags;
 			}
 			break;

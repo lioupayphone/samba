@@ -1931,7 +1931,7 @@ static bool test_aapl(struct torture_context *tctx,
 	/*
 	 * Now check returned AAPL context
 	 */
-	torture_comment(tctx, "Comparing returned AAPL capabilites\n");
+	torture_comment(tctx, "Comparing returned AAPL capabilities\n");
 
 	aapl = smb2_create_blob_find(&io.out.blobs,
 				     SMB2_CREATE_TAG_AAPL);
@@ -2006,13 +2006,7 @@ static bool test_aapl(struct torture_context *tctx,
 			       __location__);
 		goto done;
 	}
-	if (strncmp(model, "Samba", 5) != 0) {
-		torture_result(tctx, TORTURE_FAIL,
-			       "(%s) expected model \"Samba\", got: \"%s\"",
-			       __location__, model);
-		ret = false;
-		goto done;
-	}
+	torture_comment(tctx, "Got server model: \"%s\"\n", model);
 
 	/*
 	 * Now that Requested AAPL extensions are enabled, setup some
@@ -2287,7 +2281,7 @@ static bool test_setup_copy_chunk(struct torture_context *torture,
 				  uint64_t dest_size,
 				  uint32_t dest_desired_access,
 				  struct srv_copychunk_copy *cc_copy,
-				  union smb_ioctl *ioctl)
+				  union smb_ioctl *io)
 {
 	struct req_resume_key_rsp res_key;
 	bool ok;
@@ -2304,30 +2298,30 @@ static bool test_setup_copy_chunk(struct torture_context *torture,
 				    FILE_ATTRIBUTE_NORMAL);
 	torture_assert(torture, ok, "dest file create fill");
 
-	ZERO_STRUCTPN(ioctl);
-	ioctl->smb2.level = RAW_IOCTL_SMB2;
-	ioctl->smb2.in.file.handle = *src_h;
-	ioctl->smb2.in.function = FSCTL_SRV_REQUEST_RESUME_KEY;
+	ZERO_STRUCTPN(io);
+	io->smb2.level = RAW_IOCTL_SMB2;
+	io->smb2.in.file.handle = *src_h;
+	io->smb2.in.function = FSCTL_SRV_REQUEST_RESUME_KEY;
 	/* Allow for Key + ContextLength + Context */
-	ioctl->smb2.in.max_response_size = 32;
-	ioctl->smb2.in.flags = SMB2_IOCTL_FLAG_IS_FSCTL;
+	io->smb2.in.max_response_size = 32;
+	io->smb2.in.flags = SMB2_IOCTL_FLAG_IS_FSCTL;
 
-	status = smb2_ioctl(tree, mem_ctx, &ioctl->smb2);
+	status = smb2_ioctl(tree, mem_ctx, &io->smb2);
 	torture_assert_ntstatus_ok(torture, status,
 				   "FSCTL_SRV_REQUEST_RESUME_KEY");
 
-	ndr_ret = ndr_pull_struct_blob(&ioctl->smb2.out.out, mem_ctx, &res_key,
+	ndr_ret = ndr_pull_struct_blob(&io->smb2.out.out, mem_ctx, &res_key,
 			(ndr_pull_flags_fn_t)ndr_pull_req_resume_key_rsp);
 
 	torture_assert_ndr_success(torture, ndr_ret,
 				   "ndr_pull_req_resume_key_rsp");
 
-	ZERO_STRUCTPN(ioctl);
-	ioctl->smb2.level = RAW_IOCTL_SMB2;
-	ioctl->smb2.in.file.handle = *dest_h;
-	ioctl->smb2.in.function = FSCTL_SRV_COPYCHUNK;
-	ioctl->smb2.in.max_response_size = sizeof(struct srv_copychunk_rsp);
-	ioctl->smb2.in.flags = SMB2_IOCTL_FLAG_IS_FSCTL;
+	ZERO_STRUCTPN(io);
+	io->smb2.level = RAW_IOCTL_SMB2;
+	io->smb2.in.file.handle = *dest_h;
+	io->smb2.in.function = FSCTL_SRV_COPYCHUNK;
+	io->smb2.in.max_response_size = sizeof(struct srv_copychunk_rsp);
+	io->smb2.in.flags = SMB2_IOCTL_FLAG_IS_FSCTL;
 
 	ZERO_STRUCTPN(cc_copy);
 	memcpy(cc_copy->source_key, res_key.resume_key, ARRAY_SIZE(cc_copy->source_key));
@@ -2443,7 +2437,7 @@ static bool test_copyfile(struct torture_context *torture,
 	struct smb2_handle src_h;
 	struct smb2_handle dest_h;
 	NTSTATUS status;
-	union smb_ioctl ioctl;
+	union smb_ioctl io;
 	TALLOC_CTX *tmp_ctx = talloc_new(tree);
 	struct srv_copychunk_copy cc_copy;
 	struct srv_copychunk_rsp cc_rsp;
@@ -2464,21 +2458,21 @@ static bool test_copyfile(struct torture_context *torture,
 				   &dest_h, 0,	/* 0 byte dest file */
 				   SEC_FILE_READ_DATA | SEC_FILE_WRITE_DATA,
 				   &cc_copy,
-				   &ioctl);
+				   &io);
 	if (!ok) {
 		torture_fail_goto(torture, done, "setup copy chunk error");
 	}
 
-	ndr_ret = ndr_push_struct_blob(&ioctl.smb2.in.out, tmp_ctx,
+	ndr_ret = ndr_push_struct_blob(&io.smb2.in.out, tmp_ctx,
 				       &cc_copy,
 			(ndr_push_flags_fn_t)ndr_push_srv_copychunk_copy);
 	torture_assert_ndr_success(torture, ndr_ret,
 				   "ndr_push_srv_copychunk_copy");
 
-	status = smb2_ioctl(tree, tmp_ctx, &ioctl.smb2);
+	status = smb2_ioctl(tree, tmp_ctx, &io.smb2);
 	torture_assert_ntstatus_ok_goto(torture, status, ok, done, "FSCTL_SRV_COPYCHUNK");
 
-	ndr_ret = ndr_pull_struct_blob(&ioctl.smb2.out.out, tmp_ctx,
+	ndr_ret = ndr_pull_struct_blob(&io.smb2.out.out, tmp_ctx,
 				       &cc_rsp,
 			(ndr_pull_flags_fn_t)ndr_pull_srv_copychunk_rsp);
 	torture_assert_ndr_success(torture, ndr_ret,
@@ -2526,21 +2520,21 @@ static bool test_copyfile(struct torture_context *torture,
 				   &dest_h, 0,	/* 0 byte dest file */
 				   SEC_FILE_READ_DATA | SEC_FILE_WRITE_DATA,
 				   &cc_copy,
-				   &ioctl);
+				   &io);
 	if (!ok) {
 		torture_fail_goto(torture, done, "setup copy chunk error");
 	}
 
-	ndr_ret = ndr_push_struct_blob(&ioctl.smb2.in.out, tmp_ctx,
+	ndr_ret = ndr_push_struct_blob(&io.smb2.in.out, tmp_ctx,
 				       &cc_copy,
 			(ndr_push_flags_fn_t)ndr_push_srv_copychunk_copy);
 	torture_assert_ndr_success(torture, ndr_ret,
 				   "ndr_push_srv_copychunk_copy");
 
-	status = smb2_ioctl(tree, tmp_ctx, &ioctl.smb2);
+	status = smb2_ioctl(tree, tmp_ctx, &io.smb2);
 	torture_assert_ntstatus_ok_goto(torture, status, ok, done, "FSCTL_SRV_COPYCHUNK");
 
-	ndr_ret = ndr_pull_struct_blob(&ioctl.smb2.out.out, tmp_ctx,
+	ndr_ret = ndr_pull_struct_blob(&io.smb2.out.out, tmp_ctx,
 				       &cc_rsp,
 			(ndr_pull_flags_fn_t)ndr_pull_srv_copychunk_rsp);
 	torture_assert_ndr_success(torture, ndr_ret,

@@ -463,6 +463,7 @@ static ADS_STATUS libnet_join_set_machine_spn(TALLOC_CTX *mem_ctx,
 	size_t num_spns = 0;
 	char *spn = NULL;
 	bool ok;
+	const char **netbios_aliases = NULL;
 
 	/* Find our DN */
 
@@ -521,6 +522,65 @@ static ADS_STATUS libnet_join_set_machine_spn(TALLOC_CTX *mem_ctx,
 			if (!ok) {
 				return ADS_ERROR_LDAP(LDAP_NO_MEMORY);
 			}
+		}
+	}
+
+	netbios_aliases = lp_netbios_aliases();
+	if (netbios_aliases != NULL) {
+		for (; *netbios_aliases != NULL; netbios_aliases++) {
+			/*
+			 * Add HOST/NETBIOSNAME
+			 */
+			spn = talloc_asprintf(mem_ctx, "HOST/%s", *netbios_aliases);
+			if (spn == NULL) {
+				TALLOC_FREE(spn);
+				return ADS_ERROR_LDAP(LDAP_NO_MEMORY);
+			}
+			if (!strupper_m(spn)) {
+				TALLOC_FREE(spn);
+				return ADS_ERROR_LDAP(LDAP_NO_MEMORY);
+			}
+
+			ok = ads_element_in_array(spn_array, num_spns, spn);
+			if (ok) {
+				TALLOC_FREE(spn);
+				continue;
+			}
+			ok = add_string_to_array(spn_array, spn,
+						 &spn_array, &num_spns);
+			if (!ok) {
+				TALLOC_FREE(spn);
+				return ADS_ERROR_LDAP(LDAP_NO_MEMORY);
+			}
+			TALLOC_FREE(spn);
+
+			/*
+			 * Add HOST/netbiosname.domainname
+			 */
+			if (r->out.dns_domain_name == NULL) {
+				continue;
+			}
+			fstr_sprintf(my_fqdn, "%s.%s",
+				     *netbios_aliases,
+				     r->out.dns_domain_name);
+
+			spn = talloc_asprintf(mem_ctx, "HOST/%s", my_fqdn);
+			if (spn == NULL) {
+				return ADS_ERROR_LDAP(LDAP_NO_MEMORY);
+			}
+
+			ok = ads_element_in_array(spn_array, num_spns, spn);
+			if (ok) {
+				TALLOC_FREE(spn);
+				continue;
+			}
+			ok = add_string_to_array(spn_array, spn,
+						 &spn_array, &num_spns);
+			if (!ok) {
+				TALLOC_FREE(spn);
+				return ADS_ERROR_LDAP(LDAP_NO_MEMORY);
+			}
+			TALLOC_FREE(spn);
 		}
 	}
 
@@ -643,8 +703,19 @@ static ADS_STATUS libnet_join_set_os_attributes(TALLOC_CTX *mem_ctx,
 		return ADS_ERROR(LDAP_NO_MEMORY);
 	}
 
-	os_sp = talloc_asprintf(mem_ctx, "Samba %s", samba_version_string());
-	if (!os_sp) {
+	if (r->in.os_servicepack) {
+		/*
+		 * if blank string then leave os_sp equal to NULL to force
+		 * attribute delete (LDAP_MOD_DELETE)
+		 */
+		if (!strequal(r->in.os_servicepack,"")) {
+			os_sp = talloc_strdup(mem_ctx, r->in.os_servicepack);
+		}
+	} else {
+		os_sp = talloc_asprintf(mem_ctx, "Samba %s",
+					samba_version_string());
+	}
+	if (!os_sp && !strequal(r->in.os_servicepack,"")) {
 		return ADS_ERROR(LDAP_NO_MEMORY);
 	}
 
@@ -1088,7 +1159,7 @@ static NTSTATUS libnet_join_joindomain_rpc_unsecure(TALLOC_CTX *mem_ctx,
 		return status;
 	}
 
-	status = rpccli_setup_netlogon_creds(cli,
+	status = rpccli_setup_netlogon_creds(cli, NCACN_NP,
 					     netlogon_creds,
 					     true, /* force_reauth */
 					     current_nt_hash,
@@ -1460,18 +1531,15 @@ NTSTATUS libnet_join_ok(struct messaging_context *msg_ctx,
 	TALLOC_CTX *frame = talloc_stackframe();
 	struct cli_state *cli = NULL;
 	struct rpc_pipe_client *netlogon_pipe = NULL;
+	struct cli_credentials *cli_creds = NULL;
 	struct netlogon_creds_cli_context *netlogon_creds = NULL;
 	struct netlogon_creds_CredentialState *creds = NULL;
 	uint32_t netlogon_flags = 0;
-	enum netr_SchannelType sec_chan_type = 0;
 	NTSTATUS status;
-	char *machine_password = NULL;
-	const char *machine_name = NULL;
 	const char *machine_account = NULL;
+	const char *machine_domain = NULL;
+	const char *machine_password = NULL;
 	int flags = 0;
-	struct samr_Password current_nt_hash;
-	struct samr_Password *previous_nt_hash = NULL;
-	bool ok;
 
 	if (!dc_name) {
 		TALLOC_FREE(frame);
@@ -1483,39 +1551,33 @@ NTSTATUS libnet_join_ok(struct messaging_context *msg_ctx,
 		return NT_STATUS_CANT_ACCESS_DOMAIN_INFO;
 	}
 
-	ok = get_trust_pw_clear(netbios_domain_name,
-				&machine_password,
-				&machine_name,
-				&sec_chan_type);
-	if (!ok) {
+	status = pdb_get_trust_credentials(netbios_domain_name, NULL,
+					   frame, &cli_creds);
+	if (!NT_STATUS_IS_OK(status)) {
 		TALLOC_FREE(frame);
-		return NT_STATUS_CANT_ACCESS_DOMAIN_INFO;
+		return status;
 	}
 
-	machine_account = talloc_asprintf(frame, "%s$", machine_name);
-	if (machine_account == NULL) {
-		SAFE_FREE(machine_password);
-		SAFE_FREE(previous_nt_hash);
-		TALLOC_FREE(frame);
-		return NT_STATUS_CANT_ACCESS_DOMAIN_INFO;
-	}
+	/* we don't want any old password */
+	cli_credentials_set_old_password(cli_creds, NULL, CRED_SPECIFIED);
 
 	if (use_kerberos) {
 		flags |= CLI_FULL_CONNECTION_USE_KERBEROS;
 	}
+
+	machine_account = cli_credentials_get_username(cli_creds);
+	machine_domain = cli_credentials_get_domain(cli_creds);
+	machine_password = cli_credentials_get_password(cli_creds);
 
 	status = cli_full_connection(&cli, NULL,
 				     dc_name,
 				     NULL, 0,
 				     "IPC$", "IPC",
 				     machine_account,
-				     netbios_domain_name,
+				     machine_domain,
 				     machine_password,
 				     flags,
 				     SMB_SIGNING_IPC_DEFAULT);
-
-	E_md4hash(machine_password, current_nt_hash.hash);
-	SAFE_FREE(machine_password);
 
 	if (!NT_STATUS_IS_OK(status)) {
 		status = cli_full_connection(&cli, NULL,
@@ -1530,31 +1592,25 @@ NTSTATUS libnet_join_ok(struct messaging_context *msg_ctx,
 	}
 
 	if (!NT_STATUS_IS_OK(status)) {
-		SAFE_FREE(previous_nt_hash);
 		TALLOC_FREE(frame);
 		return status;
 	}
 
-	status = rpccli_create_netlogon_creds(dc_name,
-					      netbios_domain_name,
-					      machine_account,
-					      sec_chan_type,
-					      msg_ctx,
-					      frame,
-					      &netlogon_creds);
+	status = rpccli_create_netlogon_creds_with_creds(cli_creds,
+							 dc_name,
+							 msg_ctx,
+							 frame,
+							 &netlogon_creds);
 	if (!NT_STATUS_IS_OK(status)) {
-		SAFE_FREE(previous_nt_hash);
 		cli_shutdown(cli);
 		TALLOC_FREE(frame);
 		return status;
 	}
 
-	status = rpccli_setup_netlogon_creds(cli,
-					     netlogon_creds,
-					     true, /* force_reauth */
-					     current_nt_hash,
-					     previous_nt_hash);
-	SAFE_FREE(previous_nt_hash);
+	status = rpccli_setup_netlogon_creds_with_creds(cli, NCACN_NP,
+							netlogon_creds,
+							true, /* force_reauth */
+							cli_creds);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0,("connect_to_domain_password_server: "
 			 "unable to open the domain client session to "
@@ -1583,9 +1639,9 @@ NTSTATUS libnet_join_ok(struct messaging_context *msg_ctx,
 		return NT_STATUS_OK;
 	}
 
-	status = cli_rpc_pipe_open_schannel_with_key(
+	status = cli_rpc_pipe_open_schannel_with_creds(
 		cli, &ndr_table_netlogon, NCACN_NP,
-		netbios_domain_name,
+		cli_creds,
 		netlogon_creds, &netlogon_pipe);
 
 	TALLOC_FREE(netlogon_pipe);
@@ -2062,10 +2118,6 @@ static WERROR libnet_join_pre_processing(TALLOC_CTX *mem_ctx,
 		return WERR_INVALID_PARAM;
 	}
 
-	if (IS_DC) {
-		return WERR_SETUP_DOMAIN_CONTROLLER;
-	}
-
 	if (!r->in.admin_domain) {
 		char *admin_domain = NULL;
 		char *admin_account = NULL;
@@ -2251,6 +2303,7 @@ static WERROR libnet_join_check_config(TALLOC_CTX *mem_ctx,
 	bool valid_security = false;
 	bool valid_workgroup = false;
 	bool valid_realm = false;
+	bool ignored_realm = false;
 
 	/* check if configuration is already set correctly */
 
@@ -2258,7 +2311,9 @@ static WERROR libnet_join_check_config(TALLOC_CTX *mem_ctx,
 
 	switch (r->out.domain_is_ad) {
 		case false:
-			valid_security = (lp_security() == SEC_DOMAIN);
+			valid_security = (lp_security() == SEC_DOMAIN)
+				|| (lp_server_role() == ROLE_DOMAIN_PDC)
+				|| (lp_server_role() == ROLE_DOMAIN_BDC);
 			if (valid_workgroup && valid_security) {
 				/* nothing to be done */
 				return WERR_OK;
@@ -2268,11 +2323,26 @@ static WERROR libnet_join_check_config(TALLOC_CTX *mem_ctx,
 			valid_realm = strequal(lp_realm(), r->out.dns_domain_name);
 			switch (lp_security()) {
 			case SEC_DOMAIN:
+				if (!valid_realm && lp_winbind_rpc_only()) {
+					valid_realm = true;
+					ignored_realm = true;
+				}
 			case SEC_ADS:
 				valid_security = true;
 			}
 
 			if (valid_workgroup && valid_realm && valid_security) {
+				if (ignored_realm && !r->in.modify_config)
+				{
+					libnet_join_set_error_string(mem_ctx, r,
+						"Warning: ignoring realm when "
+						"joining AD domain with "
+						"'security=domain' and "
+						"'winbind rpc only = yes'. "
+						"(realm set to '%s', "
+						"should be '%s').", lp_realm(),
+						r->out.dns_domain_name);
+				}
 				/* nothing to be done */
 				return WERR_OK;
 			}
@@ -2313,9 +2383,26 @@ static WERROR libnet_join_check_config(TALLOC_CTX *mem_ctx,
 			W_ERROR_HAVE_NO_MEMORY(wrong_conf);
 		}
 
+		/*
+		 * We should generate the warning for the special case when
+		 * domain is AD, "security = domain" and the realm parameter is
+		 * not set.
+		 */
+		if (lp_security() == SEC_DOMAIN &&
+		    r->out.domain_is_ad &&
+		    !valid_realm) {
+			libnet_join_set_error_string(mem_ctx, r,
+				"Warning: when joining AD domains with security=domain, "
+				"\"realm\" should be defined in the configuration (%s) "
+				"and configuration modification was not requested",
+				wrong_conf);
+			return WERR_OK;
+		}
+
 		libnet_join_set_error_string(mem_ctx, r,
 			"Invalid configuration (%s) and configuration modification "
 			"was not requested", wrong_conf);
+
 		return WERR_CAN_NOT_COMPLETE;
 	}
 
@@ -2343,10 +2430,27 @@ static WERROR libnet_DomainJoin(TALLOC_CTX *mem_ctx,
 #ifdef HAVE_ADS
 	ADS_STATUS ads_status;
 #endif /* HAVE_ADS */
+	const char *pre_connect_realm = NULL;
+	const char *numeric_dcip = NULL;
+	const char *sitename = NULL;
+
+	/* Before contacting a DC, we can securely know
+	 * the realm only if the user specifies it.
+	 */
+	if (r->in.use_kerberos &&
+	    r->in.domain_name_type == JoinDomNameTypeDNS) {
+		pre_connect_realm = r->in.domain_name;
+	}
 
 	if (!r->in.dc_name) {
 		struct netr_DsRGetDCNameInfo *info;
 		const char *dc;
+		uint32_t name_type_flags = 0;
+		if (r->in.domain_name_type == JoinDomNameTypeDNS) {
+			name_type_flags = DS_IS_DNS_NAME;
+		} else if (r->in.domain_name_type == JoinDomNameTypeNBT) {
+			name_type_flags = DS_IS_FLAT_NAME;
+		}
 		status = dsgetdcname(mem_ctx,
 				     r->in.msg_ctx,
 				     r->in.domain_name,
@@ -2355,7 +2459,8 @@ static WERROR libnet_DomainJoin(TALLOC_CTX *mem_ctx,
 				     DS_FORCE_REDISCOVERY |
 				     DS_DIRECTORY_SERVICE_REQUIRED |
 				     DS_WRITABLE_REQUIRED |
-				     DS_RETURN_DNS_NAME,
+				     DS_RETURN_DNS_NAME |
+				     name_type_flags,
 				     &info);
 		if (!NT_STATUS_IS_OK(status)) {
 			libnet_join_set_error_string(mem_ctx, r,
@@ -2368,6 +2473,47 @@ static WERROR libnet_DomainJoin(TALLOC_CTX *mem_ctx,
 		dc = strip_hostname(info->dc_unc);
 		r->in.dc_name = talloc_strdup(mem_ctx, dc);
 		W_ERROR_HAVE_NO_MEMORY(r->in.dc_name);
+
+		if (info->dc_address == NULL || info->dc_address[0] != '\\' ||
+		    info->dc_address[1] != '\\') {
+			DBG_ERR("ill-formed DC address '%s'\n",
+				info->dc_address);
+			return WERR_DCNOTFOUND;
+		}
+
+		numeric_dcip = info->dc_address + 2;
+		sitename = info->dc_site_name;
+		/* info goes out of scope but the memory stays
+		   allocated on the talloc context */
+	}
+
+	if (pre_connect_realm != NULL) {
+		struct sockaddr_storage ss = {0};
+
+		if (numeric_dcip != NULL) {
+			if (!interpret_string_addr(&ss, numeric_dcip,
+						   AI_NUMERICHOST)) {
+				DBG_ERR(
+				    "cannot parse IP address '%s' of DC '%s'\n",
+				    numeric_dcip, r->in.dc_name);
+				return WERR_DCNOTFOUND;
+			}
+		} else {
+			if (!interpret_string_addr(&ss, r->in.dc_name, 0)) {
+				DBG_WARNING(
+				    "cannot resolve IP address of DC '%s'\n",
+				    r->in.dc_name);
+				return WERR_DCNOTFOUND;
+			}
+		}
+
+		/* The domain parameter is only used as modifier
+		 * to krb5.conf file name. .JOIN is is not a valid
+		 * NetBIOS name so it cannot clash with another domain
+		 * -- Uri.
+		 */
+		create_local_private_krb5_conf_for_domain(
+		    pre_connect_realm, ".JOIN", sitename, &ss);
 	}
 
 	status = libnet_join_lookup_dc_rpc(mem_ctx, r, &cli);
@@ -2387,7 +2533,7 @@ static WERROR libnet_DomainJoin(TALLOC_CTX *mem_ctx,
 
 	create_local_private_krb5_conf_for_domain(
 		r->out.dns_domain_name, r->out.netbios_domain_name,
-		NULL, smbXcli_conn_remote_sockaddr(cli->conn));
+		sitename, smbXcli_conn_remote_sockaddr(cli->conn));
 
 	if (r->out.domain_is_ad &&
 	    !(r->in.join_flags & WKSSVC_JOIN_FLAGS_JOIN_UNSECURE)) {

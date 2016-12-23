@@ -29,12 +29,12 @@
 #include "messages.h"
 #include "lib/util/util_tdb.h"
 #include "librpc/gen_ndr/ndr_smbXsrv.h"
-#include <ccan/hash/hash.h>
 #include "serverid.h"
 
 struct smbXsrv_open_table {
 	struct {
 		struct db_context *db_ctx;
+		struct db_context *replay_cache_db_ctx;
 		uint32_t lowest_id;
 		uint32_t highest_id;
 		uint32_t max_opens;
@@ -49,7 +49,7 @@ static struct db_context *smbXsrv_open_global_db_ctx = NULL;
 
 NTSTATUS smbXsrv_open_global_init(void)
 {
-	const char *global_path = NULL;
+	char *global_path = NULL;
 	struct db_context *db_ctx = NULL;
 
 	if (smbXsrv_open_global_db_ctx != NULL) {
@@ -57,6 +57,9 @@ NTSTATUS smbXsrv_open_global_init(void)
 	}
 
 	global_path = lock_path("smbXsrv_open_global.tdb");
+	if (global_path == NULL) {
+		return NT_STATUS_NO_MEMORY;
+	}
 
 	db_ctx = db_open(NULL, global_path,
 			 0, /* hash_size */
@@ -66,6 +69,7 @@ NTSTATUS smbXsrv_open_global_init(void)
 			 O_RDWR | O_CREAT, 0600,
 			 DBWRAP_LOCK_ORDER_1,
 			 DBWRAP_FLAG_NONE);
+	TALLOC_FREE(global_path);
 	if (db_ctx == NULL) {
 		NTSTATUS status;
 
@@ -148,6 +152,48 @@ static NTSTATUS smbXsrv_open_local_key_to_id(TDB_DATA key, uint32_t *id)
 	return NT_STATUS_OK;
 }
 
+static struct db_record *smbXsrv_open_global_fetch_locked(
+			struct db_context *db,
+			uint32_t id,
+			TALLOC_CTX *mem_ctx)
+{
+	TDB_DATA key;
+	uint8_t key_buf[SMBXSRV_OPEN_GLOBAL_TDB_KEY_SIZE];
+	struct db_record *rec = NULL;
+
+	key = smbXsrv_open_global_id_to_key(id, key_buf);
+
+	rec = dbwrap_fetch_locked(db, mem_ctx, key);
+
+	if (rec == NULL) {
+		DBG_DEBUG("Failed to lock global id 0x%08x, key '%s'\n", id,
+			  hex_encode_talloc(talloc_tos(), key.dptr, key.dsize));
+	}
+
+	return rec;
+}
+
+static struct db_record *smbXsrv_open_local_fetch_locked(
+			struct db_context *db,
+			uint32_t id,
+			TALLOC_CTX *mem_ctx)
+{
+	TDB_DATA key;
+	uint8_t key_buf[SMBXSRV_OPEN_LOCAL_TDB_KEY_SIZE];
+	struct db_record *rec = NULL;
+
+	key = smbXsrv_open_local_id_to_key(id, key_buf);
+
+	rec = dbwrap_fetch_locked(db, mem_ctx, key);
+
+	if (rec == NULL) {
+		DBG_DEBUG("Failed to lock local id 0x%08x, key '%s'\n", id,
+			  hex_encode_talloc(talloc_tos(), key.dptr, key.dsize));
+	}
+
+	return rec;
+}
+
 static NTSTATUS smbXsrv_open_table_init(struct smbXsrv_connection *conn,
 					uint32_t lowest_id,
 					uint32_t highest_id,
@@ -177,6 +223,11 @@ static NTSTATUS smbXsrv_open_table_init(struct smbXsrv_connection *conn,
 
 	table->local.db_ctx = db_open_rbt(table);
 	if (table->local.db_ctx == NULL) {
+		TALLOC_FREE(table);
+		return NT_STATUS_NO_MEMORY;
+	}
+	table->local.replay_cache_db_ctx = db_open_rbt(table);
+	if (table->local.replay_cache_db_ctx == NULL) {
 		TALLOC_FREE(table);
 		return NT_STATUS_NO_MEMORY;
 	}
@@ -272,8 +323,6 @@ static NTSTATUS smbXsrv_open_local_allocate_id(struct db_context *db,
 
 	for (i = 0; i < (range / 2); i++) {
 		uint32_t id;
-		uint8_t key_buf[SMBXSRV_OPEN_LOCAL_TDB_KEY_SIZE];
-		TDB_DATA key;
 		TDB_DATA val;
 		struct db_record *rec = NULL;
 
@@ -287,9 +336,7 @@ static NTSTATUS smbXsrv_open_local_allocate_id(struct db_context *db,
 			id = highest_id;
 		}
 
-		key = smbXsrv_open_local_id_to_key(id, key_buf);
-
-		rec = dbwrap_fetch_locked(db, mem_ctx, key);
+		rec = smbXsrv_open_local_fetch_locked(db, id, mem_ctx);
 		if (rec == NULL) {
 			return NT_STATUS_INSUFFICIENT_RESOURCES;
 		}
@@ -339,16 +386,12 @@ static NTSTATUS smbXsrv_open_local_allocate_id(struct db_context *db,
 
 	if (NT_STATUS_IS_OK(state.status)) {
 		uint32_t id;
-		uint8_t key_buf[SMBXSRV_OPEN_LOCAL_TDB_KEY_SIZE];
-		TDB_DATA key;
 		TDB_DATA val;
 		struct db_record *rec = NULL;
 
 		id = state.useable_id;
 
-		key = smbXsrv_open_local_id_to_key(id, key_buf);
-
-		rec = dbwrap_fetch_locked(db, mem_ctx, key);
+		rec = smbXsrv_open_local_fetch_locked(db, id, mem_ctx);
 		if (rec == NULL) {
 			return NT_STATUS_INSUFFICIENT_RESOURCES;
 		}
@@ -491,8 +534,6 @@ static NTSTATUS smbXsrv_open_global_allocate(struct db_context *db,
 		bool is_free = false;
 		bool was_free = false;
 		uint32_t id;
-		uint8_t key_buf[SMBXSRV_OPEN_GLOBAL_TDB_KEY_SIZE];
-		TDB_DATA key;
 
 		if (i >= min_tries && last_free != 0) {
 			id = last_free;
@@ -506,9 +547,7 @@ static NTSTATUS smbXsrv_open_global_allocate(struct db_context *db,
 			id--;
 		}
 
-		key = smbXsrv_open_global_id_to_key(id, key_buf);
-
-		global->db_rec = dbwrap_fetch_locked(db, mem_ctx, key);
+		global->db_rec = smbXsrv_open_global_fetch_locked(db, id, mem_ctx);
 		if (global->db_rec == NULL) {
 			talloc_free(global);
 			return NT_STATUS_INSUFFICIENT_RESOURCES;
@@ -627,10 +666,11 @@ static void smbXsrv_open_global_verify_record(struct db_record *db_rec,
 		exists = serverid_exists(&global->server_id);
 	}
 	if (!exists) {
+		struct server_id_buf idbuf;
 		DEBUG(2,("smbXsrv_open_global_verify_record: "
 			 "key '%s' server_id %s does not exist.\n",
 			 hex_encode_talloc(frame, key.dptr, key.dsize),
-			 server_id_str(frame, &global->server_id)));
+			 server_id_str_buf(global->server_id, &idbuf)));
 		if (CHECK_DEBUGLVL(2)) {
 			NDR_PRINT_DEBUG(smbXsrv_open_globalB, &global_blob);
 		}
@@ -713,8 +753,6 @@ static NTSTATUS smbXsrv_open_global_lookup(struct smbXsrv_open_table *table,
 					   TALLOC_CTX *mem_ctx,
 					   struct smbXsrv_open_global0 **_global)
 {
-	TDB_DATA key;
-	uint8_t key_buf[SMBXSRV_OPEN_GLOBAL_TDB_KEY_SIZE];
 	struct db_record *global_rec = NULL;
 	bool is_free = false;
 
@@ -724,15 +762,10 @@ static NTSTATUS smbXsrv_open_global_lookup(struct smbXsrv_open_table *table,
 		return NT_STATUS_INTERNAL_ERROR;
 	}
 
-	key = smbXsrv_open_global_id_to_key(open_global_id, key_buf);
-
-	global_rec = dbwrap_fetch_locked(table->global.db_ctx, mem_ctx, key);
+	global_rec = smbXsrv_open_global_fetch_locked(table->global.db_ctx,
+						      open_global_id,
+						      mem_ctx);
 	if (global_rec == NULL) {
-		DEBUG(0, ("smbXsrv_open_global_lookup(0x%08x): "
-			  "Failed to lock global key '%s'\n",
-			  open_global_id,
-			  hex_encode_talloc(talloc_tos(), key.dptr,
-					    key.dsize)));
 		return NT_STATUS_INTERNAL_DB_ERROR;
 	}
 
@@ -885,12 +918,14 @@ uint32_t smbXsrv_open_hash(struct smbXsrv_open *_open)
 {
 	uint8_t buf[8+8+8];
 	uint32_t ret;
+	TDB_DATA key;
 
 	SBVAL(buf,  0, _open->global->open_persistent_id);
 	SBVAL(buf,  8, _open->global->open_volatile_id);
 	SBVAL(buf, 16, _open->global->open_time);
 
-	ret = hash(buf, sizeof(buf), 0);
+	key = (TDB_DATA) { .dptr = buf, .dsize = sizeof(buf) };
+	ret = tdb_jenkins_hash(&key);
 
 	if (ret == 0) {
 		ret = 1;
@@ -899,12 +934,83 @@ uint32_t smbXsrv_open_hash(struct smbXsrv_open *_open)
 	return ret;
 }
 
+static NTSTATUS smbXsrv_open_set_replay_cache(struct smbXsrv_open *op)
+{
+	struct GUID *create_guid;
+	struct GUID_txt_buf buf;
+	char *guid_string;
+	struct db_context *db = op->table->local.replay_cache_db_ctx;
+	NTSTATUS status;
+
+	if (!(op->flags & SMBXSRV_OPEN_NEED_REPLAY_CACHE)) {
+		return NT_STATUS_OK;
+	}
+
+	if (op->flags & SMBXSRV_OPEN_HAVE_REPLAY_CACHE) {
+		return NT_STATUS_OK;
+	}
+
+	create_guid = &op->global->create_guid;
+	if (GUID_all_zero(create_guid)) {
+		return NT_STATUS_OK;
+	}
+
+	guid_string = GUID_buf_string(create_guid, &buf);
+	if (guid_string == NULL) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
+	status = dbwrap_store_uint32_bystring(db, guid_string, op->local_id);
+
+	if (NT_STATUS_IS_OK(status)) {
+		op->flags |= SMBXSRV_OPEN_HAVE_REPLAY_CACHE;
+		op->flags &= ~SMBXSRV_OPEN_NEED_REPLAY_CACHE;
+	}
+
+	return status;
+}
+
+static NTSTATUS smbXsrv_open_clear_replay_cache(struct smbXsrv_open *op)
+{
+	struct GUID *create_guid;
+	struct GUID_txt_buf buf;
+	char *guid_string;
+	struct db_context *db;
+	NTSTATUS status;
+
+	if (op->table == NULL) {
+		return NT_STATUS_OK;
+	}
+
+	db = op->table->local.replay_cache_db_ctx;
+
+	if (!(op->flags & SMBXSRV_OPEN_HAVE_REPLAY_CACHE)) {
+		return NT_STATUS_OK;
+	}
+
+	create_guid = &op->global->create_guid;
+	if (GUID_all_zero(create_guid)) {
+		return NT_STATUS_OK;
+	}
+
+	guid_string = GUID_buf_string(create_guid, &buf);
+	if (guid_string == NULL) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
+	status = dbwrap_purge_bystring(db, guid_string);
+
+	if (NT_STATUS_IS_OK(status)) {
+		op->flags &= ~SMBXSRV_OPEN_HAVE_REPLAY_CACHE;
+	}
+
+	return status;
+}
+
 NTSTATUS smbXsrv_open_update(struct smbXsrv_open *op)
 {
 	struct smbXsrv_open_table *table = op->table;
 	NTSTATUS status;
-	uint8_t key_buf[SMBXSRV_OPEN_GLOBAL_TDB_KEY_SIZE];
-	TDB_DATA key;
 
 	if (op->global->db_rec != NULL) {
 		DEBUG(0, ("smbXsrv_open_update(0x%08x): "
@@ -913,17 +1019,11 @@ NTSTATUS smbXsrv_open_update(struct smbXsrv_open *op)
 		return NT_STATUS_INTERNAL_ERROR;
 	}
 
-	key = smbXsrv_open_global_id_to_key(op->global->open_global_id,
-					    key_buf);
-
-	op->global->db_rec = dbwrap_fetch_locked(table->global.db_ctx,
-						 op->global, key);
+	op->global->db_rec = smbXsrv_open_global_fetch_locked(
+						table->global.db_ctx,
+						op->global->open_global_id,
+						op->global /* TALLOC_CTX */);
 	if (op->global->db_rec == NULL) {
-		DEBUG(0, ("smbXsrv_open_update(0x%08x): "
-			  "Failed to lock global key '%s'\n",
-			  op->global->open_global_id,
-			  hex_encode_talloc(talloc_tos(), key.dptr,
-					    key.dsize)));
 		return NT_STATUS_INTERNAL_DB_ERROR;
 	}
 
@@ -933,6 +1033,13 @@ NTSTATUS smbXsrv_open_update(struct smbXsrv_open *op)
 			 "global_id (0x%08x) store failed - %s\n",
 			 op->global->open_global_id,
 			 nt_errstr(status)));
+		return status;
+	}
+
+	status = smbXsrv_open_set_replay_cache(op);
+	if (!NT_STATUS_IS_OK(status)) {
+		DBG_ERR("smbXsrv_open_set_replay_cache failed: %s\n",
+			nt_errstr(status));
 		return status;
 	}
 
@@ -959,8 +1066,14 @@ NTSTATUS smbXsrv_open_close(struct smbXsrv_open *op, NTTIME now)
 	NTSTATUS status;
 	NTSTATUS error = NT_STATUS_OK;
 
+	error = smbXsrv_open_clear_replay_cache(op);
+	if (!NT_STATUS_IS_OK(error)) {
+		DBG_ERR("smbXsrv_open_clear_replay_cache failed: %s\n",
+			nt_errstr(error));
+	}
+
 	if (op->table == NULL) {
-		return NT_STATUS_OK;
+		return error;
 	}
 
 	table = op->table;
@@ -973,21 +1086,11 @@ NTSTATUS smbXsrv_open_close(struct smbXsrv_open *op, NTTIME now)
 	global_rec = op->global->db_rec;
 	op->global->db_rec = NULL;
 	if (global_rec == NULL) {
-		uint8_t key_buf[SMBXSRV_OPEN_GLOBAL_TDB_KEY_SIZE];
-		TDB_DATA key;
-
-		key = smbXsrv_open_global_id_to_key(
-						op->global->open_global_id,
-						key_buf);
-
-		global_rec = dbwrap_fetch_locked(table->global.db_ctx,
-						 op->global, key);
+		global_rec = smbXsrv_open_global_fetch_locked(
+					table->global.db_ctx,
+					op->global->open_global_id,
+					op->global /* TALLOC_CTX */);
 		if (global_rec == NULL) {
-			DEBUG(0, ("smbXsrv_open_close(0x%08x): "
-				  "Failed to lock global key '%s'\n",
-				  op->global->open_global_id,
-				  hex_encode_talloc(global_rec, key.dptr,
-						    key.dsize)));
 			error = NT_STATUS_INTERNAL_ERROR;
 		}
 	}
@@ -1046,19 +1149,10 @@ NTSTATUS smbXsrv_open_close(struct smbXsrv_open *op, NTTIME now)
 
 	local_rec = op->db_rec;
 	if (local_rec == NULL) {
-		uint8_t key_buf[SMBXSRV_OPEN_LOCAL_TDB_KEY_SIZE];
-		TDB_DATA key;
-
-		key = smbXsrv_open_local_id_to_key(op->local_id, key_buf);
-
-		local_rec = dbwrap_fetch_locked(table->local.db_ctx,
-						op, key);
+		local_rec = smbXsrv_open_local_fetch_locked(table->local.db_ctx,
+							    op->local_id,
+							    op /* TALLOC_CTX*/);
 		if (local_rec == NULL) {
-			DEBUG(0, ("smbXsrv_open_close(0x%08x): "
-				  "Failed to lock local key '%s'\n",
-				  op->global->open_global_id,
-				  hex_encode_talloc(local_rec, key.dptr,
-						    key.dsize)));
 			error = NT_STATUS_INTERNAL_ERROR;
 		}
 	}
@@ -1155,6 +1249,7 @@ NTSTATUS smb2srv_open_lookup(struct smbXsrv_connection *conn,
 	uint64_t local_zeros = volatile_id & 0xFFFFFFFF00000000LLU;
 	uint32_t global_id = persistent_id & UINT32_MAX;
 	uint64_t global_zeros = persistent_id & 0xFFFFFFFF00000000LLU;
+	NTSTATUS status;
 
 	if (local_zeros != 0) {
 		return NT_STATUS_FILE_CLOSED;
@@ -1168,7 +1263,65 @@ NTSTATUS smb2srv_open_lookup(struct smbXsrv_connection *conn,
 		return NT_STATUS_FILE_CLOSED;
 	}
 
-	return smbXsrv_open_local_lookup(table, local_id, global_id, now, _open);
+	status = smbXsrv_open_local_lookup(table, local_id, global_id, now,
+					   _open);
+	if (!NT_STATUS_IS_OK(status)) {
+		return status;
+	}
+
+	/*
+	 * Clear the replay cache for this create_guid if it exists:
+	 * This is based on the assumption that this lookup will be
+	 * triggered by a client request using the file-id for lookup.
+	 * Hence the client has proven that it has in fact seen the
+	 * reply to its initial create call. So subsequent create replays
+	 * should be treated as invalid. Hence the index for create_guid
+	 * lookup needs to be removed.
+	 */
+	status = smbXsrv_open_clear_replay_cache(*_open);
+
+	return status;
+}
+
+NTSTATUS smb2srv_open_lookup_replay_cache(struct smbXsrv_connection *conn,
+					  const struct GUID *create_guid,
+					  NTTIME now, /* TODO: needed ? */
+					  struct smbXsrv_open **_open)
+{
+	NTSTATUS status;
+	char *guid_string;
+	struct GUID_txt_buf buf;
+	uint32_t local_id = 0;
+	struct smbXsrv_open_table *table = conn->client->open_table;
+	struct db_context *db = table->local.replay_cache_db_ctx;
+
+	if (GUID_all_zero(create_guid)) {
+		return NT_STATUS_NOT_FOUND;
+	}
+
+	guid_string = GUID_buf_string(create_guid, &buf);
+	if (guid_string == NULL) {
+		return NT_STATUS_INVALID_PARAMETER;
+	}
+
+	status = dbwrap_fetch_uint32_bystring(db, guid_string, &local_id);
+	if (NT_STATUS_EQUAL(status, NT_STATUS_NOT_FOUND)) {
+		return status;
+	}
+	if (!NT_STATUS_IS_OK(status)) {
+		DBG_ERR("failed to fetch local_id from replay cache: %s\n",
+			nt_errstr(status));
+		return status;
+	}
+
+	status = smbXsrv_open_local_lookup(table, local_id, 0, /* global_id */
+					   now, _open);
+	if (!NT_STATUS_IS_OK(status)) {
+		DBG_ERR("smbXsrv_open_local_lookup failed for local_id %u\n",
+			(unsigned)local_id);
+	}
+
+	return status;
 }
 
 NTSTATUS smb2srv_open_recreate(struct smbXsrv_connection *conn,
@@ -1397,21 +1550,16 @@ NTSTATUS smbXsrv_open_cleanup(uint64_t persistent_id)
 	NTSTATUS status = NT_STATUS_OK;
 	TALLOC_CTX *frame = talloc_stackframe();
 	struct smbXsrv_open_global0 *op = NULL;
-	uint8_t key_buf[SMBXSRV_OPEN_GLOBAL_TDB_KEY_SIZE];
-	TDB_DATA key;
 	TDB_DATA val;
 	struct db_record *rec;
 	bool delete_open = false;
 	uint32_t global_id = persistent_id & UINT32_MAX;
 
-	key = smbXsrv_open_global_id_to_key(global_id, key_buf);
-	rec = dbwrap_fetch_locked(smbXsrv_open_global_db_ctx, frame, key);
+	rec = smbXsrv_open_global_fetch_locked(smbXsrv_open_global_db_ctx,
+					       global_id,
+					       frame);
 	if (rec == NULL) {
 		status = NT_STATUS_NOT_FOUND;
-		DEBUG(1, ("smbXsrv_open_cleanup[global: 0x%08x] "
-			  "failed to fetch record from %s - %s\n",
-			   global_id, dbwrap_name(smbXsrv_open_global_db_ctx),
-			   nt_errstr(status)));
 		goto done;
 	}
 
@@ -1448,9 +1596,11 @@ NTSTATUS smbXsrv_open_cleanup(uint64_t persistent_id)
 			   op->durable_timeout_msec / 1000,
 			   delete_open ? "" : " not"));
 	} else if (!serverid_exists(&op->server_id)) {
+		struct server_id_buf idbuf;
 		DEBUG(10, ("smbXsrv_open_cleanup[global: 0x%08x] "
 			   "server[%s] does not exist\n",
-			   global_id, server_id_str(frame, &op->server_id)));
+			   global_id,
+			   server_id_str_buf(op->server_id, &idbuf)));
 		delete_open = true;
 	}
 

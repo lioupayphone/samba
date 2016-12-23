@@ -113,7 +113,7 @@ static bool idmap_init(void)
 		"idmapconfig\\(.*\\):backend", 2,
 		idmap_found_domain_backend, NULL);
 	if (ret != 0) {
-		DEBUG(5, ("wi_scan_global_parametrics returned %d\n", ret));
+		DBG_WARNING("wi_scan_global_parametrics returned %d\n", ret);
 		return false;
 	}
 
@@ -165,7 +165,7 @@ static bool idmap_found_domain_backend(
 	const char *string, regmatch_t matches[], void *private_data)
 {
 	if (matches[1].rm_so == -1) {
-		DEBUG(5, ("Found match, but no name??\n"));
+		DBG_WARNING("Found match, but no name??\n");
 		return false;
 	}
 
@@ -177,7 +177,7 @@ static bool idmap_found_domain_backend(
 		memcpy(domname, string + matches[1].rm_so, len);
 		domname[len] = '\0';
 
-		DEBUG(7, ("Found idmap domain \"%s\"\n", domname));
+		DBG_DEBUG("Found idmap domain \"%s\"\n", domname);
 
 		if (strcmp(domname, "*") == 0) {
 			return false;
@@ -185,15 +185,15 @@ static bool idmap_found_domain_backend(
 
 		dom = idmap_init_named_domain(idmap_domains, domname);
 		if (dom == NULL) {
-			DEBUG(3, ("Could not init idmap domain %s\n",
-				  domname));
+			DBG_NOTICE("Could not init idmap domain %s\n",
+				   domname);
 			return false;
 		}
 
 		tmp = talloc_realloc(idmap_domains, idmap_domains,
 				     struct idmap_domain *, num_domains + 1);
 		if (tmp == NULL) {
-			DEBUG(1, ("talloc_realloc failed\n"));
+			DBG_WARNING("talloc_realloc failed\n");
 			TALLOC_FREE(dom);
 			return false;
 		}

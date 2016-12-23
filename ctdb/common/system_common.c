@@ -18,10 +18,15 @@
    along with this program; if not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "includes.h"
+#include "replace.h"
 #include "system/network.h"
 
-#include "ctdb_private.h"
+#include "lib/util/debug.h"
+
+#include "protocol/protocol.h"
+
+#include "common/logging.h"
+#include "common/system.h"
 
 /*
   uint16 checksum for n bytes
@@ -85,7 +90,7 @@ char *ctdb_sys_find_ifname(ctdb_sock_addr *addr)
 	struct ifconf ifc;
 	char *ptr;
 
-	s = socket(AF_INET, SOCK_RAW, htons(IPPROTO_RAW));
+	s = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
 	if (s == -1) {
 		DEBUG(DEBUG_CRIT,(__location__ " failed to open raw socket (%s)\n",
 			 strerror(errno)));

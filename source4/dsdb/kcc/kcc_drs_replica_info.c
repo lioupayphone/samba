@@ -214,7 +214,7 @@ static WERROR kccdrs_replica_get_info_obj_metadata2(TALLOC_CTX *mem_ctx,
 		const struct dsdb_attribute *schema_attr;
 		uint32_t attr_version;
 		NTTIME attr_change_time;
-		uint32_t attr_originating_usn;
+		uint32_t attr_originating_usn = 0;
 
 		/*
 		  attr := attrsSeq[i]
@@ -468,7 +468,7 @@ static WERROR get_ncs_list(TALLOC_CTX *mem_ctx,
 		nc_list_elem = talloc_zero(mem_ctx, struct ncList);
 		W_ERROR_HAVE_NO_MEMORY(nc_list_elem);
 		nc_list_elem->dn = nc_dn;
-		DLIST_ADD_END(*nc_list, nc_list_elem, struct ncList*);
+		DLIST_ADD_END(*nc_list, nc_list_elem);
 	} else {
 		/* ncs := getNCs() from ldb database.
 		 * getNCs() must return an array containing

@@ -20,6 +20,11 @@
 #ifndef _ASN_1_H
 #define _ASN_1_H
 
+#include "replace.h"
+#include <talloc.h>
+#include "lib/util/data_blob.h"
+
+
 struct nesting;
 struct asn1_data;
 typedef struct asn1_data ASN1_DATA;
@@ -71,7 +76,6 @@ bool asn1_peek(struct asn1_data *data, void *p, int len);
 bool asn1_read(struct asn1_data *data, void *p, int len);
 bool asn1_read_uint8(struct asn1_data *data, uint8_t *v);
 bool asn1_peek_uint8(struct asn1_data *data, uint8_t *v);
-bool asn1_peek_tag_needed_size(struct asn1_data *data, uint8_t tag, size_t *size);
 bool asn1_peek_tag(struct asn1_data *data, uint8_t tag);
 bool asn1_start_tag(struct asn1_data *data, uint8_t tag);
 bool asn1_end_tag(struct asn1_data *data);

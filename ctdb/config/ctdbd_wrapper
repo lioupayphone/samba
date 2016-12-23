@@ -15,14 +15,16 @@ action="$2"
 
 ############################################################
 
-[ -n "$CTDB_BASE" ] || export CTDB_BASE="/etc/ctdb"
+if [ -z "$CTDB_BASE" ] ; then
+    export CTDB_BASE="/usr/local/etc/ctdb"
+fi
 
 . "${CTDB_BASE}/functions"
 loadconfig "ctdb"
 
 [ -n "$CTDB_SOCKET" ] && export CTDB_SOCKET
 
-ctdbd="${CTDBD:-/usr/sbin/ctdbd}"
+ctdbd="${CTDBD:-/usr/local/sbin/ctdbd}"
 
 ############################################################
 
@@ -77,6 +79,39 @@ ctdbd_is_running ()
 
 ############################################################
 
+# If necessary, mount volatile database directory on tmpfs
+dbdir_tmpfs_start ()
+{
+    if [ -z "$CTDB_DBDIR_TMPFS_OPTIONS" ] ; then
+	return
+    fi
+
+    # Shortcut for readability
+    _opts="$CTDB_DBDIR_TMPFS_OPTIONS"
+
+    mkdir -p "$CTDB_DBDIR" || exit $?
+
+    # If already mounted then remount, otherwise mount
+    if findmnt -t tmpfs "$CTDB_DBDIR" >/dev/null ; then
+	mount -t tmpfs -o "remount,$_opts" none "$CTDB_DBDIR" || \
+	    exit $?
+    else
+	mount -t tmpfs -o "$_opts" none "$CTDB_DBDIR" || exit $?
+    fi
+}
+
+# If necessary, unmount volatile database tmpfs directory on exit
+dbdir_tmpfs_stop ()
+{
+    if [ -z "$CTDB_DBDIR_TMPFS_OPTIONS" ] ; then
+	return
+    fi
+
+    if [ -d "$CTDB_DBDIR" ] && findmnt -t tmpfs "$CTDB_DBDIR" >/dev/null ; then
+	umount "$CTDB_DBDIR"
+    fi
+}
+
 build_ctdb_options ()
 {
     ctdb_options=""
@@ -111,9 +146,10 @@ build_ctdb_options ()
     maybe_set "--pidfile"                "$pidfile"
 
     # build up ctdb_options variable from optional parameters
-    maybe_set "--logfile"                "$CTDB_LOGFILE"
+    maybe_set "--logging"                "$CTDB_LOGGING"
     maybe_set "--nlist"                  "$CTDB_NODES"
     maybe_set "--socket"                 "$CTDB_SOCKET"
+    maybe_set "--listen"                 "$CTDB_NODE_ADDRESS"
     maybe_set "--public-addresses"       "$CTDB_PUBLIC_ADDRESSES"
     maybe_set "--public-interface"       "$CTDB_PUBLIC_INTERFACE"
     maybe_set "--dbdir"                  "$CTDB_DBDIR"
@@ -129,7 +165,6 @@ build_ctdb_options ()
     maybe_set "--no-lmaster"             "$CTDB_CAPABILITY_LMASTER"   "no"
     maybe_set "--lvs --single-public-ip" "$CTDB_LVS_PUBLIC_IP"
     maybe_set "--script-log-level"       "$CTDB_SCRIPT_LOG_LEVEL"
-    maybe_set "--syslog"                 "$CTDB_SYSLOG"               "yes"
     maybe_set "--max-persistent-check-errors" "$CTDB_MAX_PERSISTENT_CHECK_ERRORS"
 }
 
@@ -146,8 +181,8 @@ kill_ctdbd ()
 
     if [ -n "$_session" ] ; then
 	pkill -9 -s "$_session" 2>/dev/null
+	rm -f "$pidfile"
     fi
-    rm -f "$pidfile"
 }
 
 ############################################################
@@ -161,10 +196,9 @@ start()
 
     # About to start new $ctdbd.  The main daemon is not running but
     # there may still be other processes around, so do some cleanup.
-    # Note that starting ctdbd below will destroy the Unix domain
-    # socket, so any processes that aren't yet completely useless soon
-    # will be, so this can really do no harm.
     kill_ctdbd "$_session"
+
+    dbdir_tmpfs_start
 
     build_ctdb_options
 
@@ -176,20 +210,32 @@ start()
 	ulimit -c unlimited
     fi
 
+    if [ -n "$CTDB_MAX_OPEN_FILES" ]; then
+	ulimit -n $CTDB_MAX_OPEN_FILES
+    fi
+
     mkdir -p $(dirname "$pidfile")
 
     if [ -n "$CTDB_VALGRIND" -a "$CTDB_VALGRIND" != "no" ] ; then
 	if [ "$CTDB_VALGRIND" = "yes" ] ; then
-	    ctdbd="valgrind -q --log-file=/var/log/ctdb_valgrind ${ctdbd}"
+	    ctdbd="valgrind -q --log-file=/usr/local/var/log/ctdb_valgrind ${ctdbd}"
 	else
 	    ctdbd="${CTDB_VALGRIND} ${ctdbd}"
 	fi
 	ctdb_options="${ctdb_options} --valgrinding"
     fi
 
-    if [ "$CTDB_SYSLOG" != "yes" ] ; then
-	logger -t ctdbd "CTDB is being run without syslog enabled.  Logs will be in ${CTDB_LOGFILE:-/var/log/log.ctdb}"
-    fi
+    case "$CTDB_LOGGING" in
+	syslog:udp|syslog:udp-rfc5424)
+	    logger -t ctdbd "CTDB is being run with ${CTDB_LOGGING}.  If nothing is logged then check your syslogd configuration"
+	    ;;
+	syslog|syslog:*) : ;;
+	file:*)
+	    logger -t ctdbd "CTDB is being run without syslog enabled.  Logs will be in ${CTDB_LOGGING#file:}"
+	    ;;
+	*)
+	    logger -t ctdbd "CTDB is being run without syslog enabled.  Logs will be in log.ctdb"
+    esac
 
     eval "$ctdbd" "$ctdb_options" || return 1
 
@@ -238,24 +284,32 @@ stop()
     # Wait for remaining CTDB processes to exit...
     _timeout=${CTDB_SHUTDOWN_TIMEOUT:-30}
     _count=0
+    _terminated=false
     while [ $_count -lt $_timeout ] ; do
-	pkill -0 -s "$_session" 2>/dev/null || return 0
+	if ! pkill -0 -s "$_session" 2>/dev/null ; then
+	    _terminated=true
+	    break
+	fi
 
 	_count=$(($_count + 1))
 	sleep 1
     done
 
-    echo "Timed out waiting for CTDB to shutdown.  Killing CTDB processes."
-    kill_ctdbd "$_session"
-    drop_all_public_ips >/dev/null 2>&1
+    if ! $_terminated ; then
+	echo "Timed out waiting for CTDB to shutdown.  Killing CTDB processes."
+	kill_ctdbd "$_session"
+	drop_all_public_ips >/dev/null 2>&1
 
-    sleep 1
+	sleep 1
 
-    if pkill -0 -s "$_session" ; then
-	# If SIGKILL didn't work then things are bad...
-	echo "Failed to kill all CTDB processes.  Giving up."
-	return 1
+	if pkill -0 -s "$_session" ; then
+	    # If SIGKILL didn't work then things are bad...
+	    echo "Failed to kill all CTDB processes.  Giving up."
+	    return 1
+	fi
     fi
+
+    dbdir_tmpfs_stop
 
     return 0
 }

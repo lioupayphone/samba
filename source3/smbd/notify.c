@@ -55,8 +55,8 @@ struct notify_change_request {
 	struct notify_change_request *prev, *next;
 	struct files_struct *fsp;	/* backpointer for cancel by mid */
 	struct smb_request *req;
-	uint32 filter;
-	uint32 max_param;
+	uint32_t filter;
+	uint32_t max_param;
 	void (*reply_fn)(struct smb_request *req,
 			 NTSTATUS error_code,
 			 uint8_t *buf, size_t len);
@@ -65,7 +65,7 @@ struct notify_change_request {
 };
 
 static void notify_fsp(files_struct *fsp, struct timespec when,
-		       uint32 action, const char *name);
+		       uint32_t action, const char *name);
 
 bool change_notify_fsp_has_changes(struct files_struct *fsp)
 {
@@ -115,7 +115,7 @@ static int compare_notify_change_events(const void *p1, const void *p2)
 }
 
 static bool notify_marshall_changes(int num_changes,
-				uint32 max_offset,
+				uint32_t max_offset,
 				struct notify_change_event *changes,
 				DATA_BLOB *final_blob)
 {
@@ -248,16 +248,7 @@ static void notify_callback(void *private_data, struct timespec when,
 	notify_fsp(fsp, when, e->action, e->path);
 }
 
-static void sys_notify_callback(struct sys_notify_context *ctx,
-				void *private_data,
-				struct notify_event *e)
-{
-	files_struct *fsp = (files_struct *)private_data;
-	DEBUG(10, ("sys_notify_callback called for %s\n", fsp_str_dbg(fsp)));
-	notify_fsp(fsp, timespec_current(), e->action, e->path);
-}
-
-NTSTATUS change_notify_create(struct files_struct *fsp, uint32 filter,
+NTSTATUS change_notify_create(struct files_struct *fsp, uint32_t filter,
 			      bool recursive)
 {
 	char *fullpath;
@@ -296,19 +287,6 @@ NTSTATUS change_notify_create(struct files_struct *fsp, uint32 filter,
 
 	subdir_filter = recursive ? filter : 0;
 
-	if (fsp->conn->sconn->sys_notify_ctx != NULL) {
-		void *sys_notify_handle = NULL;
-
-		status = SMB_VFS_NOTIFY_WATCH(
-			fsp->conn, fsp->conn->sconn->sys_notify_ctx,
-			fullpath, &filter, &subdir_filter,
-			sys_notify_callback, fsp, &sys_notify_handle);
-
-		if (NT_STATUS_IS_OK(status)) {
-			talloc_steal(fsp->notify, sys_notify_handle);
-		}
-	}
-
 	if ((filter != 0) || (subdir_filter != 0)) {
 		status = notify_add(fsp->conn->sconn->notify_ctx,
 				    fullpath, filter, subdir_filter,
@@ -319,8 +297,8 @@ NTSTATUS change_notify_create(struct files_struct *fsp, uint32 filter,
 }
 
 NTSTATUS change_notify_add_request(struct smb_request *req,
-				uint32 max_param,
-				uint32 filter, bool recursive,
+				uint32_t max_param,
+				uint32_t filter, bool recursive,
 				struct files_struct *fsp,
 				void (*reply_fn)(struct smb_request *req,
 					NTSTATUS error_code,
@@ -349,8 +327,7 @@ NTSTATUS change_notify_add_request(struct smb_request *req,
 	request->reply_fn = reply_fn;
 	request->backend_data = NULL;
 
-	DLIST_ADD_END(fsp->notify->requests, request,
-		      struct notify_change_request *);
+	DLIST_ADD_END(fsp->notify->requests, request);
 
 	map->mid = request->req->mid;
 	DLIST_ADD(sconn->smb1.notify_mid_maps, map);
@@ -514,29 +491,20 @@ void remove_pending_change_notify_requests_by_fid(files_struct *fsp,
 	}
 }
 
-void notify_fname(connection_struct *conn, uint32 action, uint32 filter,
+void notify_fname(connection_struct *conn, uint32_t action, uint32_t filter,
 		  const char *path)
 {
 	struct notify_context *notify_ctx = conn->sconn->notify_ctx;
-	char *fullpath, *to_free;
-	char tmpbuf[PATH_MAX];
-	ssize_t len;
 
 	if (path[0] == '.' && path[1] == '/') {
 		path += 2;
 	}
-	len = full_path_tos(conn->connectpath, path, tmpbuf, sizeof(tmpbuf),
-			    &fullpath, &to_free);
-	if (len == -1) {
-		DEBUG(0, ("full_path_tos failed\n"));
-		return;
-	}
-	notify_trigger(notify_ctx, action, filter, fullpath);
-	TALLOC_FREE(to_free);
+
+	notify_trigger(notify_ctx, action, filter, conn->connectpath, path);
 }
 
 static void notify_fsp(files_struct *fsp, struct timespec when,
-		       uint32 action, const char *name)
+		       uint32_t action, const char *name)
 {
 	struct notify_change_event *change, *changes;
 	char *tmp;
@@ -636,7 +604,7 @@ static void notify_fsp(files_struct *fsp, struct timespec when,
 	change_notify_remove_request(fsp->conn->sconn, fsp->notify->requests);
 }
 
-char *notify_filter_string(TALLOC_CTX *mem_ctx, uint32 filter)
+char *notify_filter_string(TALLOC_CTX *mem_ctx, uint32_t filter)
 {
 	char *result = NULL;
 

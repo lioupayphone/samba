@@ -27,7 +27,7 @@ import ldb
 import time
 import base64
 import os
-from samba import dsdb
+from samba import dsdb, dsdb_dns
 from samba.ndr import ndr_unpack, ndr_pack
 from samba.dcerpc import drsblobs, misc
 from samba.common import normalise_int32
@@ -39,6 +39,7 @@ class SamDB(samba.Ldb):
     """The SAM database."""
 
     hash_oid_name = {}
+    hash_well_known = {}
 
     def __init__(self, url=None, lp=None, modules_dir=None, session_info=None,
                  credentials=None, flags=0, options=None, global_schema=True,
@@ -270,7 +271,7 @@ changetype: modify
                     ldb.binary_encode(member), ldb.binary_encode(member)), attrs=[])
 
                 if len(targetmember) != 1:
-                    continue
+                    raise Exception('Unable to find "%s". Operation cancelled.' % member)
 
                 if add_members_operation is True and (targetgroup[0].get('member') is None or str(targetmember[0].dn) not in targetgroup[0]['member']):
                     modified = True
@@ -793,7 +794,19 @@ accountExpires: %u
         return dsdb._dsdb_get_nc_root(self, dn)
 
     def get_wellknown_dn(self, nc_root, wkguid):
-        return dsdb._dsdb_get_wellknown_dn(self, nc_root, wkguid)
+        h_nc = self.hash_well_known.get(str(nc_root))
+        dn = None
+        if h_nc is not None:
+            dn = h_nc.get(wkguid)
+        if dn is None:
+            dn = dsdb._dsdb_get_wellknown_dn(self, nc_root, wkguid)
+            if dn is None:
+                return dn
+            if h_nc is None:
+                self.hash_well_known[str(nc_root)] = {}
+                h_nc = self.hash_well_known[str(nc_root)]
+            h_nc[wkguid] = dn
+        return dn
 
     def set_minPwdAge(self, value):
         m = ldb.Message()
@@ -908,3 +921,26 @@ accountExpires: %u
         '''get the server DN from the rootDSE'''
         res = self.search(base="", scope=ldb.SCOPE_BASE, attrs=["serverName"])
         return res[0]["serverName"][0]
+
+    def dns_lookup(self, dns_name):
+        '''Do a DNS lookup in the database, returns the NDR database structures'''
+        return dsdb_dns.lookup(self, dns_name)
+
+    def dns_extract(self, el):
+        '''Return the NDR database structures from a dnsRecord element'''
+        return dsdb_dns.extract(el)
+
+    def dns_replace(self, dns_name, new_records):
+        '''Do a DNS modification on the database, sets the NDR database
+        structures on a DNS name
+        '''
+        return dsdb_dns.replace(self, dns_name, new_records)
+
+    def dns_replace_by_dn(self, dn, new_records):
+        '''Do a DNS modification on the database, sets the NDR database
+        structures on a LDB DN
+
+        This routine is important because if the last record on the DN
+        is removed, this routine will put a tombstone in the record.
+        '''
+        return dsdb_dns.replace_by_dn(self, dn, new_records)

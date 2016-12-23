@@ -84,6 +84,7 @@ struct net_context {
 	const char *opt_output;
 	int opt_wipe;
 	const char *opt_precheck;
+	int opt_no_dns_updates;
 
 	int opt_have_ip;
 	struct sockaddr_storage opt_dest_ip;
@@ -133,7 +134,7 @@ typedef struct copy_clistate {
 	struct cli_state *cli_share_src;
 	struct cli_state *cli_share_dst;
 	char *cwd;
-	uint16 attribute;
+	uint16_t attribute;
 	struct net_context *c;
 }copy_clistate;
 

@@ -34,10 +34,13 @@ struct sessionid {
 	fstring netbios_name;
 	fstring remote_machine;
 	fstring id_str;
-	uint32  id_num;
+	uint32_t id_num;
 	struct server_id pid;
 	fstring ip_addr_str;
 	time_t connect_start;
-	fstring protocol_ver;
+	uint16_t connection_dialect;
+	uint8_t encryption_flags;
+	uint16_t cipher;
+	uint8_t signing_flags;
 };
 

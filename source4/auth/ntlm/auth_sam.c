@@ -34,6 +34,7 @@
 #include "librpc/gen_ndr/ndr_irpc_c.h"
 #include "lib/messaging/irpc.h"
 #include "libcli/auth/libcli_auth.h"
+#include "libds/common/roles.h"
 
 NTSTATUS auth_sam_init(void);
 
@@ -294,6 +295,7 @@ static NTSTATUS authsam_password_check_and_record(struct auth4_context *auth_con
 		struct samr_Password *nt_history_pwd = NULL;
 		struct samr_Password *lm_history_pwd = NULL;
 		NTTIME pwdLastSet;
+		struct timeval tv_now;
 		NTTIME now;
 		int allowed_period_mins;
 		NTTIME allowed_period;
@@ -414,7 +416,8 @@ static NTSTATUS authsam_password_check_and_record(struct auth4_context *auth_con
 		 */
 		allowed_period = allowed_period_mins * 60 * 1000*1000*10;
 		pwdLastSet = samdb_result_nttime(msg, "pwdLastSet", 0);
-		unix_to_nt_time(&now, time(NULL));
+		tv_now = timeval_current();
+		now = timeval_to_nttime(&tv_now);
 
 		if (now < pwdLastSet) {
 			/*
@@ -491,6 +494,7 @@ static NTSTATUS authsam_authenticate(struct auth4_context *auth_context,
 				     DATA_BLOB *user_sess_key, DATA_BLOB *lm_sess_key)
 {
 	NTSTATUS nt_status;
+	bool interactive = (user_info->password_state == AUTH_PASSWORD_HASH);
 	uint16_t acct_flags = samdb_result_acct_flags(msg, NULL);
 	TALLOC_CTX *tmp_ctx = talloc_new(mem_ctx);
 	if (!tmp_ctx) {
@@ -526,7 +530,9 @@ static NTSTATUS authsam_authenticate(struct auth4_context *auth_context,
 		return nt_status;
 	}
 
-	nt_status = authsam_zero_bad_pwd_count(auth_context->sam_ctx, msg);
+	nt_status = authsam_logon_success_accounting(auth_context->sam_ctx,
+						     msg, domain_dn,
+						     interactive);
 	if (!NT_STATUS_IS_OK(nt_status)) {
 		TALLOC_FREE(tmp_ctx);
 		return nt_status;

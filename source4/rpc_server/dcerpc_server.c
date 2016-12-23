@@ -439,13 +439,13 @@ static void dcesrv_call_set_list(struct dcesrv_call_state *call,
 	case DCESRV_LIST_NONE:
 		break;
 	case DCESRV_LIST_CALL_LIST:
-		DLIST_ADD_END(call->conn->call_list, call, struct dcesrv_call_state *);
+		DLIST_ADD_END(call->conn->call_list, call);
 		break;
 	case DCESRV_LIST_FRAGMENTED_CALL_LIST:
-		DLIST_ADD_END(call->conn->incoming_fragmented_call_list, call, struct dcesrv_call_state *);
+		DLIST_ADD_END(call->conn->incoming_fragmented_call_list, call);
 		break;
 	case DCESRV_LIST_PENDING_CALL_LIST:
-		DLIST_ADD_END(call->conn->pending_call_list, call, struct dcesrv_call_state *);
+		DLIST_ADD_END(call->conn->pending_call_list, call);
 		break;
 	}
 }
@@ -510,7 +510,7 @@ static NTSTATUS dcesrv_bind_nak(struct dcesrv_call_state *call, uint32_t reason)
 
 	dcerpc_set_frag_length(&rep->blob, rep->blob.length);
 
-	DLIST_ADD_END(call->replies, rep, struct data_blob_list_item *);
+	DLIST_ADD_END(call->replies, rep);
 	dcesrv_call_set_list(call, DCESRV_LIST_CALL_LIST);
 
 	if (call->conn->call_list && call->conn->call_list->replies) {
@@ -888,7 +888,7 @@ static NTSTATUS dcesrv_bind(struct dcesrv_call_state *call)
 
 	dcerpc_set_frag_length(&rep->blob, rep->blob.length);
 
-	DLIST_ADD_END(call->replies, rep, struct data_blob_list_item *);
+	DLIST_ADD_END(call->replies, rep);
 	dcesrv_call_set_list(call, DCESRV_LIST_CALL_LIST);
 
 	if (call->conn->call_list && call->conn->call_list->replies) {
@@ -1061,7 +1061,7 @@ static NTSTATUS dcesrv_alter_resp(struct dcesrv_call_state *call,
 
 	dcerpc_set_frag_length(&rep->blob, rep->blob.length);
 
-	DLIST_ADD_END(call->replies, rep, struct data_blob_list_item *);
+	DLIST_ADD_END(call->replies, rep);
 	dcesrv_call_set_list(call, DCESRV_LIST_CALL_LIST);
 
 	if (call->conn->call_list && call->conn->call_list->replies) {
@@ -1641,6 +1641,15 @@ _PUBLIC_ NTSTATUS dcesrv_init_context(TALLOC_CTX *mem_ctx,
 
 	dce_ctx = talloc_zero(mem_ctx, struct dcesrv_context);
 	NT_STATUS_HAVE_NO_MEMORY(dce_ctx);
+
+	if (uid_wrapper_enabled()) {
+		setenv("UID_WRAPPER_MYUID", "1", 1);
+	}
+	dce_ctx->initial_euid = geteuid();
+	if (uid_wrapper_enabled()) {
+		unsetenv("UID_WRAPPER_MYUID");
+	}
+
 	dce_ctx->endpoint_list	= NULL;
 	dce_ctx->lp_ctx = lp_ctx;
 	dce_ctx->assoc_groups_idr = idr_init(dce_ctx);
@@ -1800,7 +1809,7 @@ static void dcesrv_terminate_connection(struct dcesrv_connection *dce_conn, cons
 	if (dce_conn->terminate == NULL) {
 		dce_conn->terminate = "dcesrv: defered terminating connection - no memory";
 	}
-	DLIST_ADD_END(dce_ctx->broken_connections, dce_conn, NULL);
+	DLIST_ADD_END(dce_ctx->broken_connections, dce_conn);
 }
 
 static void dcesrv_cleanup_broken_connections(struct dcesrv_context *dce_ctx)
@@ -2064,6 +2073,37 @@ static void dcesrv_sock_accept(struct stream_connection *srv_conn)
 
 	dcesrv_conn->local_address = srv_conn->local_address;
 	dcesrv_conn->remote_address = srv_conn->remote_address;
+
+	if (transport == NCALRPC) {
+		uid_t uid;
+		gid_t gid;
+
+		ret = getpeereid(socket_get_fd(srv_conn->socket), &uid, &gid);
+		if (ret == -1) {
+			status = map_nt_error_from_unix_common(errno);
+			DEBUG(0, ("dcesrv_sock_accept: "
+				  "getpeereid() failed for NCALRPC: %s\n",
+				  nt_errstr(status)));
+			stream_terminate_connection(srv_conn, nt_errstr(status));
+			return;
+		}
+		if (uid == dcesrv_conn->dce_ctx->initial_euid) {
+			struct tsocket_address *r = NULL;
+
+			ret = tsocket_address_unix_from_path(dcesrv_conn,
+							     "/root/ncalrpc_as_system",
+							     &r);
+			if (ret == -1) {
+				status = map_nt_error_from_unix_common(errno);
+				DEBUG(0, ("dcesrv_sock_accept: "
+					  "tsocket_address_unix_from_path() failed for NCALRPC: %s\n",
+					  nt_errstr(status)));
+				stream_terminate_connection(srv_conn, nt_errstr(status));
+				return;
+			}
+			dcesrv_conn->remote_address = r;
+		}
+	}
 
 	srv_conn->private_data = dcesrv_conn;
 

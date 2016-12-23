@@ -153,7 +153,7 @@ void nb_createx(const char *fname,
 	uint16_t fd = (uint16_t)-1;
 	int i;
 	NTSTATUS status;
-	uint32 desired_access;
+	uint32_t desired_access;
 
 	if (create_options & FILE_DIRECTORY_FILE) {
 		desired_access = FILE_READ_DATA;
@@ -287,7 +287,7 @@ void nb_qfsinfo(int level)
 {
 	uint64_t bsize, total, avail;
 	/* this is not the right call - we need cli_qfsinfo() */
-	cli_disk_size(c, &bsize, &total, &avail);
+	cli_disk_size(c, "", &bsize, &total, &avail);
 }
 
 static NTSTATUS find_fn(const char *mnt, struct file_info *finfo, const char *name,

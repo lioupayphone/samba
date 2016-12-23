@@ -22,8 +22,8 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include <talloc.h>
 #include "replace.h"
+#include <talloc.h>
 #include "system/network.h"
 #include "system/filesys.h"
 #include "system/locale.h"
@@ -275,8 +275,8 @@ _PUBLIC_ bool directory_create_or_exist_strict(const char *dname,
 		return false;
 	}
 	if (st.st_uid != uid && !uid_wrapper_enabled()) {
-		DEBUG(3, ("invalid ownership on directory "
-			  "%s\n", dname));
+		DBG_NOTICE("invalid ownership on directory "
+			  "%s\n", dname);
 		return false;
 	}
 	if ((st.st_mode & 0777) != dir_perms) {
@@ -732,7 +732,7 @@ _PUBLIC_ void dump_data_pw(const char *msg, const uint8_t * data, size_t len)
  */
 _PUBLIC_ bool all_zero(const uint8_t *ptr, size_t size)
 {
-	int i;
+	size_t i;
 	if (!ptr) return true;
 	for (i=0;i<size;i++) {
 		if (ptr[i]) return false;
@@ -773,7 +773,7 @@ void *malloc_array(size_t el_size, unsigned int count)
 
 void *memalign_array(size_t el_size, size_t align, unsigned int count)
 {
-	if (count*el_size >= MAX_MALLOC_SIZE) {
+	if (el_size == 0 || count >= MAX_MALLOC_SIZE/el_size) {
 		return NULL;
 	}
 
@@ -932,19 +932,7 @@ _PUBLIC_ void hex_encode_buf(char *dst, const uint8_t *src, size_t srclen)
 }
 
 /**
- * Routine to print a buffer as HEX digits, into an allocated string.
- */
-_PUBLIC_ void hex_encode(const unsigned char *buff_in, size_t len, char **out_hex_buffer)
-{
-	char *hex_buffer;
-
-	*out_hex_buffer = malloc_array_p(char, (len*2)+1);
-	hex_buffer = *out_hex_buffer;
-	hex_encode_buf(hex_buffer, buff_in, len);
-}
-
-/**
- * talloc version of hex_encode()
+ * talloc version of hex_encode_buf()
  */
 _PUBLIC_ char *hex_encode_talloc(TALLOC_CTX *mem_ctx, const unsigned char *buff_in, size_t len)
 {

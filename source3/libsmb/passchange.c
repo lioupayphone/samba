@@ -123,18 +123,6 @@ NTSTATUS remote_password_change(const char *remote_machine, const char *user_nam
 			cli_shutdown(cli);
 			return result;
 		}
-
-		result = cli_init_creds(cli, "", "", NULL);
-		if (!NT_STATUS_IS_OK(result)) {
-			cli_shutdown(cli);
-			return result;
-		}
-	} else {
-		result = cli_init_creds(cli, user, domain, old_passwd);
-		if (!NT_STATUS_IS_OK(result)) {
-			cli_shutdown(cli);
-			return result;
-		}
 	}
 
 	result = cli_tree_connect(cli, "IPC$", "IPC", "", 1);
@@ -154,6 +142,7 @@ NTSTATUS remote_password_change(const char *remote_machine, const char *user_nam
 		result = cli_rpc_pipe_open_generic_auth(cli,
 							&ndr_table_samr,
 							NCACN_NP,
+							CRED_DONT_USE_KERBEROS,
 							DCERPC_AUTH_TYPE_NTLMSSP,
 							DCERPC_AUTH_LEVEL_PRIVACY,
 							remote_machine,
@@ -222,12 +211,6 @@ NTSTATUS remote_password_change(const char *remote_machine, const char *user_nam
 	TALLOC_FREE(pipe_hnd);
 
 	/* Try anonymous NTLMSSP... */
-	result = cli_init_creds(cli, "", "", NULL);
-	if (!NT_STATUS_IS_OK(result)) {
-		cli_shutdown(cli);
-		return result;
-	}
-
 	result = NT_STATUS_UNSUCCESSFUL;
 
 	/* OK, this is ugly, but... try an anonymous pipe. */
@@ -280,7 +263,7 @@ NTSTATUS remote_password_change(const char *remote_machine, const char *user_nam
 			if (asprintf(err_str, "SAMR connection to machine %s "
 				 "failed. Error was %s, but LANMAN password "
 				 "changes are disabled\n",
-				nt_errstr(result), remote_machine) == -1) {
+				remote_machine, nt_errstr(result)) == -1) {
 				*err_str = NULL;
 			}
 			cli_shutdown(cli);

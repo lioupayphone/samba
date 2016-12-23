@@ -28,6 +28,7 @@
 #include "system/filesys.h"
 #include "system/dir.h"
 #include "param/param.h"
+#include "libds/common/roles.h"
 
 /**
  * @file
@@ -193,9 +194,7 @@ char *lpcfg_private_path(TALLOC_CTX* mem_ctx,
  * @brief Returns an absolute path to a NTDB or TDB file in the Samba
  * private directory.
  *
- * @param name File to find, relative to PRIVATEDIR, without .(n)tdb extension.
- * Only provide fixed-string names which are supposed to change with "use ntdb"
- * option.
+ * @param name File to find, relative to PRIVATEDIR, without .tdb extension.
  *
  * @retval Pointer to a talloc'ed string containing the full path, for
  * use with dbwrap_local_open().
@@ -204,14 +203,8 @@ char *lpcfg_private_db_path(TALLOC_CTX *mem_ctx,
 			    struct loadparm_context *lp_ctx,
 			    const char *name)
 {
-	const char *extension = ".tdb";
-
-	if (lpcfg_use_ntdb(lp_ctx)) {
-		extension = ".ntdb";
-	}
-
-	return talloc_asprintf(mem_ctx, "%s/%s%s",
-			       lpcfg_private_dir(lp_ctx), name, extension);
+	return talloc_asprintf(mem_ctx, "%s/%s.tdb",
+			       lpcfg_private_dir(lp_ctx), name);
 }
 
 /**

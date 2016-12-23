@@ -26,14 +26,15 @@
 #include "lib/conn_tdb.h"
 #include "smbd/globals.h"
 #include "util_tdb.h"
+#include "librpc/gen_ndr/ndr_open_files.h"
 
 static int net_serverid_list_fn(const struct server_id *id,
 				uint32_t msg_flags, void *priv)
 {
-	char *str = server_id_str(talloc_tos(), id);
-	d_printf("%s %llu 0x%x\n", str, (unsigned long long)id->unique_id,
+	struct server_id_buf idbuf;
+	d_printf("%s %llu 0x%x\n", server_id_str_buf(*id, &idbuf),
+		 (unsigned long long)id->unique_id,
 		 (unsigned int)msg_flags);
-	TALLOC_FREE(str);
 	return 0;
 }
 
@@ -50,15 +51,14 @@ static int net_serverid_wipe_fn(struct db_record *rec,
 {
 	NTSTATUS status;
 
-	if (id->vnn != get_my_vnn()) {
+	if (!procid_is_local(id)) {
 		return 0;
 	}
 	status = dbwrap_record_delete(rec);
 	if (!NT_STATUS_IS_OK(status)) {
-		char *str = server_id_str(talloc_tos(), id);
+		struct server_id_buf idbuf;
 		DEBUG(1, ("Could not delete serverid.tdb record %s: %s\n",
-			  str, nt_errstr(status)));
-		TALLOC_FREE(str);
+			  server_id_str_buf(*id, &idbuf), nt_errstr(status)));
 	}
 	return 0;
 }
@@ -125,34 +125,39 @@ static struct wipedbs_server_data *get_server_data(struct wipedbs_state *state,
 		ret = *(struct wipedbs_server_data**) val.dptr;
 		TALLOC_FREE(val.dptr);
 	} else if (NT_STATUS_EQUAL(status, NT_STATUS_NOT_FOUND)) {
+		struct server_id_buf idbuf;
+
+		server_id_str_buf(*id, &idbuf);
+
 		ret = talloc_zero(state->id2server_data,
 				  struct wipedbs_server_data);
 		if (ret == NULL) {
 			DEBUG(0, ("Failed to allocate server entry for %s\n",
-				  server_id_str(talloc_tos(), id)));
+				  idbuf.buf));
 			goto done;
 		}
 		ret->server_id = *id;
-		ret->server_id_str = server_id_str(ret, id);
+		ret->server_id_str = talloc_strdup(ret, idbuf.buf);
 		ret->exists = true;
 		val = make_tdb_data((const void*)&ret, sizeof(ret));
 		status = dbwrap_store(state->id2server_data,
 				      key, val, TDB_INSERT);
 		if (!NT_STATUS_IS_OK(status)) {
 			DEBUG(0, ("Failed to store server entry for %s: %s\n",
-				  server_id_str(talloc_tos(), id),
-				  nt_errstr(status)));
+				  idbuf.buf, nt_errstr(status)));
 		}
 		goto done;
 	} else {
+		struct server_id_buf idbuf;
 		DEBUG(0, ("Failed to fetch server entry for %s: %s\n",
-			  server_id_str(talloc_tos(), id), nt_errstr(status)));
+			  server_id_str_buf(*id, &idbuf), nt_errstr(status)));
 		goto done;
 	}
 	if (!server_id_equal(id, &ret->server_id)) {
+		struct server_id_buf idbuf1, idbuf2;
 		DEBUG(0, ("uniq id collision for %s and %s\n",
-			  server_id_str(talloc_tos(), id),
-			  server_id_str(talloc_tos(), &ret->server_id)));
+			  server_id_str_buf(*id, &idbuf1),
+			  server_id_str_buf(ret->server_id, &idbuf2)));
 		smb_panic("server_id->unique_id not unique!");
 	}
 done:
@@ -299,9 +304,22 @@ static int wipedbs_traverse_open(struct smbXsrv_open_global0 *open,
 
 		if (state->verbose) {
 			TALLOC_CTX *mem_ctx = talloc_new(talloc_tos());
-			d_printf("open[global: %u] disconnected at "
+			enum ndr_err_code ndr_err;
+			struct vfs_default_durable_cookie cookie;
+
+			ndr_err = ndr_pull_struct_blob(
+				&open->backend_cookie, mem_ctx, &cookie,
+				(ndr_pull_flags_fn_t)ndr_pull_vfs_default_durable_cookie);
+			if (!NDR_ERR_CODE_IS_SUCCESS(ndr_err)) {
+				d_printf("ndr_pull_struct_blob failed\n");
+				ret = -1;
+				goto done;
+			}
+
+			d_printf("open[%s/%s id: 0x%" PRIx32 "] disconnected at "
 				 "[%s] %us ago with timeout of %us "
 				 "-%s reached\n",
+				 cookie.servicepath, cookie.base_name,
 				 open->open_global_id,
 				 nt_time_string(mem_ctx, open->disconnect_time),
 				 (unsigned)(tdiff/1000000),
@@ -396,6 +414,19 @@ static int wipedbs_traverse_set_exists(struct db_record *rec,
 	state->idx++;
 	return 0;
 }
+
+static bool serverids_exist(const struct server_id *ids, int num_ids,
+			    bool *results)
+{
+	int i;
+
+	for (i=0; i<num_ids; i++) {
+		results[i] = serverid_exists(&ids[i]);
+	}
+
+	return true;
+}
+
 
 static NTSTATUS wipedbs_check_server_exists(struct wipedbs_state *state)
 {
@@ -637,6 +668,30 @@ done:
 	return ret;
 }
 
+static int net_serverid_exists(struct net_context *c, int argc,
+			       const char **argv)
+{
+	struct server_id pid;
+	bool ok;
+
+	if ((argc != 1) || (c->display_usage)) {
+		d_printf("Usage:\n"
+			 "net serverid exists <serverid>\n");
+		return -1;
+	}
+
+	pid = server_id_from_string(get_my_vnn(), argv[0]);
+	ok = serverid_exists(&pid);
+
+	if (ok) {
+		d_printf("%s exists\n", argv[0]);
+	} else {
+		d_printf("%s does not exist\n", argv[0]);
+	}
+
+	return 0;
+}
+
 int net_serverid(struct net_context *c, int argc, const char **argv)
 {
 	struct functable func[] = {
@@ -663,6 +718,13 @@ int net_serverid(struct net_context *c, int argc, const char **argv)
 			N_("Clean dead entries from temporary databases"),
 			N_("net serverid wipedbs\n"
 			   "    Clean dead entries from temporary databases")
+		},
+		{
+			"exists",
+			net_serverid_exists,
+			NET_TRANSPORT_LOCAL,
+			N_("Show existence of a serverid"),
+			N_("net serverid exists <id>")
 		},
 		{NULL, NULL, 0, NULL, NULL}
 	};

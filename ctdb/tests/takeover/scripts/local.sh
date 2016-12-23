@@ -1,6 +1,6 @@
 # Hey Emacs, this is a -*- shell-script -*- !!!  :-)
 
-test_prog="ctdb_takeover_tests ctdb_takeover_run_core"
+test_prog="ctdb_takeover_tests ipalloc"
 
 define_test ()
 {
@@ -15,9 +15,16 @@ define_test ()
     printf "%-12s - %s\n" "$_f" "$1"
 }
 
+extra_footer ()
+{
+    cat <<EOF
+--------------------------------------------------
+Algorithm: $CTDB_IP_ALGORITHM
+--------------------------------------------------
+EOF
+}
+
 simple_test ()
 {
-    _out=$($VALGRIND $test_prog "$@" 2>&1)
-
-    result_check "Algorithm: $CTDB_IP_ALGORITHM"
+    unit_test $test_prog "$@"
 }

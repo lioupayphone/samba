@@ -11,7 +11,7 @@ import Build, Utils, Node
 from TaskGen import feature, after, before
 import preproc
 
-@feature('cc', 'cxx')
+@feature('c', 'cc', 'cxx')
 @after('apply_type_vars', 'apply_lib_vars', 'apply_core')
 def apply_incpaths(self):
     lst = []
@@ -59,7 +59,7 @@ def apply_incpaths(self):
         if node:
             self.env.append_value('INC_PATHS', node)
 
-@feature('cc')
+@feature('c', 'cc')
 @after('apply_incpaths')
 def apply_obj_vars_cc(self):
     """after apply_incpaths for INC_PATHS"""
@@ -165,7 +165,7 @@ def is_this_a_static_lib(self, name):
     try:
         return cache[name]
     except KeyError:
-        ret = cache[name] = 'cstaticlib' in self.bld.name_to_obj(name, self.env).features
+        ret = cache[name] = 'cstaticlib' in self.bld.get_tgen_by_name(name).features
         return ret
 TaskGen.task_gen.is_this_a_static_lib = is_this_a_static_lib
 
@@ -187,7 +187,7 @@ def shared_ancestors(self):
         return ret
 TaskGen.task_gen.shared_ancestors = shared_ancestors
 
-@feature('cc', 'cxx')
+@feature('c', 'cc', 'cxx')
 @after('apply_link', 'init_cc', 'init_cxx', 'apply_core')
 def apply_lib_vars(self):
     """after apply_link because of 'link_task'
@@ -215,7 +215,7 @@ def apply_lib_vars(self):
         if lib_name in seen:
             continue
 
-        y = self.name_to_obj(lib_name)
+        y = self.get_tgen_by_name(lib_name)
         if not y:
             raise Utils.WafError('object %r was not found in uselib_local (required by %r)' % (lib_name, self.name))
         y.post()
@@ -266,66 +266,4 @@ def apply_lib_vars(self):
             if val:
                 self.env.append_value(v, val)
 
-@feature('cprogram', 'cshlib', 'cstaticlib')
-@after('apply_lib_vars')
-@before('apply_obj_vars')
-def samba_before_apply_obj_vars(self):
-    """before apply_obj_vars for uselib, this removes the standard pathes"""
 
-    def is_standard_libpath(env, path):
-        for _path in env.STANDARD_LIBPATH:
-            if _path == os.path.normpath(path):
-                return True
-        return False
-
-    v = self.env
-
-    for i in v['RPATH']:
-        if is_standard_libpath(v, i):
-            v['RPATH'].remove(i)
-
-    for i in v['LIBPATH']:
-        if is_standard_libpath(v, i):
-            v['LIBPATH'].remove(i)
-
-@feature('cc')
-@before('apply_incpaths', 'apply_obj_vars_cc')
-def samba_stash_cppflags(self):
-    """Fix broken waf ordering of CPPFLAGS"""
-
-    self.env.SAVED_CPPFLAGS = self.env.CPPFLAGS
-    self.env.CPPFLAGS = []
-
-@feature('cc')
-@after('apply_incpaths', 'apply_obj_vars_cc')
-def samba_pop_cppflags(self):
-    """append stashed user CPPFLAGS after our internally computed flags"""
-
-    #
-    # Note that we don't restore the values to 'CPPFLAGS',
-    # but to _CCINCFLAGS instead.
-    #
-    # buildtools/wafadmin/Tools/cc.py defines the 'cc' task generator as
-    # '${CC} ${CCFLAGS} ${CPPFLAGS} ${_CCINCFLAGS} ${_CCDEFFLAGS} ${CC_SRC_F}${SRC} ${CC_TGT_F}${TGT}'
-    #
-    # Our goal is to effectively invert the order of ${CPPFLAGS} and
-    # ${_CCINCFLAGS}.
-    self.env.append_value('_CCINCFLAGS', self.env.SAVED_CPPFLAGS)
-    self.env.SAVED_CPPFLAGS = []
-
-@feature('cprogram', 'cshlib', 'cstaticlib')
-@before('apply_obj_vars', 'add_extra_flags')
-def samba_stash_linkflags(self):
-    """stash away LINKFLAGS in order to fix waf's broken ordering wrt or
-    user LDFLAGS"""
-
-    self.env.SAVE_LINKFLAGS = self.env.LINKFLAGS
-    self.env.LINKFLAGS = []
-
-@feature('cprogram', 'cshlib', 'cstaticlib')
-@after('apply_obj_vars', 'add_extra_flags')
-def samba_pop_linkflags(self):
-    """after apply_obj_vars append saved LDFLAGS"""
-
-    self.env.append_value('LINKFLAGS', self.env.SAVE_LINKFLAGS)
-    self.env.SAVE_LINKFLAGS = []

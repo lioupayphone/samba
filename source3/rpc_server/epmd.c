@@ -25,8 +25,6 @@
 #include "ntdomain.h"
 #include "messages.h"
 
-#include "lib/util/util_process.h"
-
 #include "librpc/rpc/dcerpc_ep.h"
 #include "../librpc/gen_ndr/srv_epmapper.h"
 #include "rpc_server/rpc_server.h"
@@ -162,15 +160,11 @@ void start_epmd(struct tevent_context *ev_ctx,
 		return;
 	}
 
-	status = reinit_after_fork(msg_ctx,
-				   ev_ctx,
-				   true);
+	status = smbd_reinit_after_fork(msg_ctx, ev_ctx, true, "epmd");
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0,("reinit_after_fork() failed\n"));
 		smb_panic("reinit_after_fork() failed");
 	}
-
-	prctl_set_comment("epmd");
 
 	epmd_reopen_logs();
 
@@ -192,7 +186,7 @@ void start_epmd(struct tevent_context *ev_ctx,
 
 	status = rpc_epmapper_init(&epmapper_cb);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("Failed to register epmd rpc inteface! (%s)\n",
+		DEBUG(0, ("Failed to register epmd rpc interface! (%s)\n",
 			  nt_errstr(status)));
 		exit(1);
 	}

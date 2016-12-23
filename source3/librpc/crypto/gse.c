@@ -502,8 +502,17 @@ static NTSTATUS gse_get_server_auth_token(TALLOC_CTX *mem_ctx,
 						GSS_C_NO_BUFFER);
 		}
 
-		status = NT_STATUS_LOGON_FAILURE;
-		goto done;
+		/*
+		 * If we got an output token, make Windows aware of it
+		 * by telling it that more processing is needed
+		 */
+		if (out_data.length > 0) {
+			status = NT_STATUS_MORE_PROCESSING_REQUIRED;
+			/* Fall through to handle the out token */
+		} else {
+			status = NT_STATUS_LOGON_FAILURE;
+			goto done;
+		}
 	}
 
 	/* we may be told to return nothing */
@@ -785,8 +794,8 @@ static NTSTATUS gensec_gse_seal_packet(struct gensec_security *gensec_security,
 				    whole_pdu, pdu_length,
 				    mem_ctx, sig);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("gssapi_seal_packet(hdr_signing=%u,sig_size=%ju,"
-			  "data=%ju,pdu=%ju) failed: %s\n",
+		DEBUG(0, ("gssapi_seal_packet(hdr_signing=%u,sig_size=%zu,"
+			  "data=%zu,pdu=%zu) failed: %s\n",
 			  hdr_signing, sig_size, length, pdu_length,
 			  nt_errstr(status)));
 		return status;
@@ -817,8 +826,8 @@ static NTSTATUS gensec_gse_unseal_packet(struct gensec_security *gensec_security
 				      whole_pdu, pdu_length,
 				      sig);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("gssapi_unseal_packet(hdr_signing=%u,sig_size=%ju,"
-			  "data=%ju,pdu=%ju) failed: %s\n",
+		DEBUG(0, ("gssapi_unseal_packet(hdr_signing=%u,sig_size=%zu,"
+			  "data=%zu,pdu=%zu) failed: %s\n",
 			  hdr_signing, sig->length, length, pdu_length,
 			  nt_errstr(status)));
 		return status;
@@ -851,7 +860,7 @@ static NTSTATUS gensec_gse_sign_packet(struct gensec_security *gensec_security,
 				    mem_ctx, sig);
 	if (!NT_STATUS_IS_OK(status)) {
 		DEBUG(0, ("gssapi_sign_packet(hdr_signing=%u,"
-			  "data=%ju,pdu=%ju) failed: %s\n",
+			  "data=%zu,pdu=%zu) failed: %s\n",
 			  hdr_signing, length, pdu_length,
 			  nt_errstr(status)));
 		return status;
@@ -882,8 +891,8 @@ static NTSTATUS gensec_gse_check_packet(struct gensec_security *gensec_security,
 				     whole_pdu, pdu_length,
 				     sig);
 	if (!NT_STATUS_IS_OK(status)) {
-		DEBUG(0, ("gssapi_check_packet(hdr_signing=%u,sig_size=%ju"
-			  "data=%ju,pdu=%ju) failed: %s\n",
+		DEBUG(0, ("gssapi_check_packet(hdr_signing=%u,sig_size=%zu"
+			  "data=%zu,pdu=%zu) failed: %s\n",
 			  hdr_signing, sig->length, length, pdu_length,
 			  nt_errstr(status)));
 		return status;

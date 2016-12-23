@@ -23,7 +23,7 @@
 #include "system/filesys.h"
 #include "librpc/gen_ndr/xattr.h"
 #include "librpc/gen_ndr/ndr_xattr.h"
-#include "../lib/crypto/crypto.h"
+#include "../lib/crypto/sha256.h"
 #include "dbwrap/dbwrap.h"
 #include "dbwrap/dbwrap_open.h"
 #include "auth.h"
@@ -99,7 +99,7 @@ static struct db_record *acl_tdb_lock(TALLOC_CTX *mem_ctx,
 					struct db_context *db,
 					const struct file_id *id)
 {
-	uint8 id_buf[16];
+	uint8_t id_buf[16];
 
 	/* For backwards compatibility only store the dev/inode. */
 	push_file_id_16((char *)id_buf, id);
@@ -146,7 +146,7 @@ static NTSTATUS get_acl_blob(TALLOC_CTX *ctx,
 			const char *name,
 			DATA_BLOB *pblob)
 {
-	uint8 id_buf[16];
+	uint8_t id_buf[16];
 	TDB_DATA data;
 	struct file_id id;
 	struct db_context *db = acl_db;
@@ -202,7 +202,7 @@ static NTSTATUS store_acl_blob_fsp(vfs_handle_struct *handle,
 				files_struct *fsp,
 				DATA_BLOB *pblob)
 {
-	uint8 id_buf[16];
+	uint8_t id_buf[16];
 	struct file_id id;
 	TDB_DATA data;
 	struct db_context *db = acl_db;
@@ -403,6 +403,7 @@ static struct vfs_fn_pointers vfs_acl_tdb_fns = {
 	.sys_acl_set_fd_fn = sys_acl_set_fd_tdb
 };
 
+static_decl_vfs;
 NTSTATUS vfs_acl_tdb_init(void)
 {
 	return smb_register_vfs(SMB_VFS_INTERFACE_VERSION, "acl_tdb",

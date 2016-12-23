@@ -44,7 +44,7 @@ static NTSTATUS make_dc_info_from_cldap_reply(TALLOC_CTX *mem_ctx,
 /****************************************************************
 ****************************************************************/
 
-void debug_dsdcinfo_flags(int lvl, uint32_t flags)
+static void debug_dsdcinfo_flags(int lvl, uint32_t flags)
 {
 	DEBUG(lvl,("debug_dsdcinfo_flags: 0x%08x\n\t", flags));
 
@@ -284,7 +284,7 @@ static uint32_t get_cldap_reply_server_flags(struct netlogon_samlogon_response *
 static bool check_cldap_reply_required_flags(uint32_t ret_flags,
 					     uint32_t req_flags)
 {
-	if (ret_flags == 0) {
+	if (req_flags == 0) {
 		return true;
 	}
 
@@ -483,10 +483,6 @@ static NTSTATUS discover_dc_netbios(TALLOC_CTX *mem_ctx,
 	*returned_dclist = NULL;
 	*returned_count = 0;
 
-	if (lp_disable_netbios()) {
-		return NT_STATUS_NOT_SUPPORTED;
-	}
-
 	if (flags & DS_PDC_REQUIRED) {
 		name_type = NBT_NAME_PDC;
 	}
@@ -547,39 +543,45 @@ static NTSTATUS discover_dc_dns(TALLOC_CTX *mem_ctx,
 	int numaddrs = 0;
 	struct ip_service_name *dclist = NULL;
 	int count = 0;
-	const char *dns_hosts_file;
-	char *guid_string;
 
-	dns_hosts_file = lp_parm_const_string(-1, "resolv", "host file", NULL);
 	if (flags & DS_PDC_REQUIRED) {
-		status = ads_dns_query_pdc(mem_ctx, dns_hosts_file,
-					   domain_name, &dcs, &numdcs);
+		status = ads_dns_query_pdc(mem_ctx,
+					   domain_name,
+					   &dcs,
+					   &numdcs);
 	} else if (flags & DS_GC_SERVER_REQUIRED) {
-		status = ads_dns_query_gcs(mem_ctx, dns_hosts_file,
-					   domain_name, site_name,
-					   &dcs, &numdcs);
+		status = ads_dns_query_gcs(mem_ctx,
+					   domain_name,
+					   site_name,
+					   &dcs,
+					   &numdcs);
 	} else if (flags & DS_KDC_REQUIRED) {
-		status = ads_dns_query_kdcs(mem_ctx, dns_hosts_file,
-					    domain_name, site_name,
-					    &dcs, &numdcs);
+		status = ads_dns_query_kdcs(mem_ctx,
+					    domain_name,
+					    site_name,
+					    &dcs,
+					    &numdcs);
 	} else if (flags & DS_DIRECTORY_SERVICE_REQUIRED) {
-		status = ads_dns_query_dcs(mem_ctx, dns_hosts_file,
-					   domain_name, site_name,
-					   &dcs, &numdcs);
+		status = ads_dns_query_dcs(mem_ctx,
+					   domain_name,
+					   site_name,
+					   &dcs,
+					   &numdcs);
 	} else if (domain_guid) {
-		guid_string = GUID_string(mem_ctx, domain_guid);
-		if (!guid_string) {
-			return NT_STATUS_NO_MEMORY;
-		}
+		struct GUID_txt_buf buf;
+		GUID_buf_string(domain_guid, &buf);
 
-		status = ads_dns_query_dcs_guid(mem_ctx, dns_hosts_file,
-						domain_name, guid_string,
-						&dcs, &numdcs);
-		TALLOC_FREE(guid_string);
+		status = ads_dns_query_dcs_guid(mem_ctx,
+						domain_name,
+						buf.buf,
+						&dcs,
+						&numdcs);
 	} else {
-		status = ads_dns_query_dcs(mem_ctx, dns_hosts_file,
-					   domain_name, site_name,
-					   &dcs, &numdcs);
+		status = ads_dns_query_dcs(mem_ctx,
+					   domain_name,
+					   site_name,
+					   &dcs,
+					   &numdcs);
 	}
 
 	if (!NT_STATUS_IS_OK(status)) {
@@ -790,14 +792,14 @@ static NTSTATUS make_dc_info_from_cldap_reply(TALLOC_CTX *mem_ctx,
 		print_sockaddr(addr, sizeof(addr), ss);
 		dc_address = addr;
 		dc_address_type = DS_ADDRESS_TYPE_INET;
-	}
-
-	if (!ss && r->sockaddr.pdc_ip) {
-		dc_address	= r->sockaddr.pdc_ip;
-		dc_address_type	= DS_ADDRESS_TYPE_INET;
 	} else {
-		dc_address      = r->pdc_name;
-		dc_address_type = DS_ADDRESS_TYPE_NETBIOS;
+		if (r->sockaddr.pdc_ip) {
+			dc_address	= r->sockaddr.pdc_ip;
+			dc_address_type	= DS_ADDRESS_TYPE_INET;
+		} else {
+			dc_address      = r->pdc_name;
+			dc_address_type = DS_ADDRESS_TYPE_NETBIOS;
+		}
 	}
 
 	map_dc_and_domain_names(flags,
@@ -1036,6 +1038,10 @@ static NTSTATUS dsgetdcname_rediscover(TALLOC_CTX *mem_ctx,
 
 	if (flags & DS_IS_FLAT_NAME) {
 
+		if (lp_disable_netbios()) {
+			return NT_STATUS_NOT_SUPPORTED;
+		}
+
 		status = discover_dc_netbios(mem_ctx, domain_name, flags,
 					     &dclist, &num_dcs);
 		NT_STATUS_NOT_OK_RETURN(status);
@@ -1064,6 +1070,10 @@ static NTSTATUS dsgetdcname_rediscover(TALLOC_CTX *mem_ctx,
 		if (NT_STATUS_IS_OK(status)) {
 			return status;
 		}
+	}
+
+	if (lp_disable_netbios()) {
+		return NT_STATUS_DOMAIN_CONTROLLER_NOT_FOUND;
 	}
 
 	status = discover_dc_netbios(mem_ctx, domain_name, flags, &dclist,

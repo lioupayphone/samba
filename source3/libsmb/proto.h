@@ -161,10 +161,6 @@ int cli_set_message(char *buf,int num_words,int num_bytes,bool zero);
 unsigned int cli_set_timeout(struct cli_state *cli, unsigned int timeout);
 bool cli_set_backup_intent(struct cli_state *cli, bool flag);
 void cli_setup_packet_buf(struct cli_state *cli, char *buf);
-NTSTATUS cli_set_domain(struct cli_state *cli, const char *domain);
-NTSTATUS cli_set_username(struct cli_state *cli, const char *username);
-NTSTATUS cli_set_password(struct cli_state *cli, const char *password);
-NTSTATUS cli_init_creds(struct cli_state *cli, const char *username, const char *domain, const char *password);
 extern struct GUID cli_state_client_guid;
 struct cli_state *cli_state_create(TALLOC_CTX *mem_ctx,
 				   int fd,
@@ -528,7 +524,8 @@ struct tevent_req *cli_dskattr_send(TALLOC_CTX *mem_ctx,
 NTSTATUS cli_dskattr_recv(struct tevent_req *req, int *bsize, int *total,
 			  int *avail);
 NTSTATUS cli_dskattr(struct cli_state *cli, int *bsize, int *total, int *avail);
-NTSTATUS cli_disk_size(struct cli_state *cli, uint64_t *bsize, uint64_t *total, uint64_t *avail);
+NTSTATUS cli_disk_size(struct cli_state *cli, const char *path, uint64_t *bsize,
+		       uint64_t *total, uint64_t *avail);
 struct tevent_req *cli_ctemp_send(TALLOC_CTX *mem_ctx,
 				struct tevent_context *ev,
 				struct cli_state *cli,
@@ -652,7 +649,7 @@ struct tevent_req *cli_set_unix_extensions_capabilities_send(
 NTSTATUS cli_set_unix_extensions_capabilities_recv(struct tevent_req *req);
 NTSTATUS cli_set_unix_extensions_capabilities(struct cli_state *cli,
 					      uint16_t major, uint16_t minor,
-					      uint32_t caplow, uint32 caphigh);
+					      uint32_t caplow, uint32_t caphigh);
 struct tevent_req *cli_get_fs_attr_info_send(TALLOC_CTX *mem_ctx,
 					     struct tevent_context *ev,
 					     struct cli_state *cli);
@@ -817,6 +814,13 @@ NTSTATUS cli_push(struct cli_state *cli, uint16_t fnum, uint16_t mode,
 		  off_t start_offset, size_t window_size,
 		  size_t (*source)(uint8_t *buf, size_t n, void *priv),
 		  void *priv);
+
+NTSTATUS cli_splice(struct cli_state *srccli, struct cli_state *dstcli,
+		    uint16_t src_fnum, uint16_t dst_fnum,
+		    off_t size,
+		    off_t src_offset, off_t dst_offset,
+		    off_t *written,
+		    int (*splice_cb)(off_t n, void *priv), void *priv);
 
 /* The following definitions come from libsmb/clisecdesc.c  */
 

@@ -26,8 +26,10 @@
 #define __LIBNDR_H__
 
 #include <talloc.h>
-#include <sys/time.h>
-#include "../lib/util/samba_util.h" /* for discard_const */
+#include "../lib/util/memory.h" /* for discard_const */
+#include "../lib/util/byteorder.h"
+#include "../lib/util/data_blob.h"
+#include "../lib/util/time.h"
 #include "../lib/util/charset/charset.h"
 
 /*
@@ -556,6 +558,11 @@ enum ndr_err_code ndr_push_ ## name(struct ndr_push *ndr, int ndr_flags, type v)
 enum ndr_err_code ndr_pull_ ## name(struct ndr_pull *ndr, int ndr_flags, type *v); \
 void ndr_print_ ## name(struct ndr_print *ndr, const char *var_name, type v); 
 
+#define NDR_SCALAR_PTR_PROTO(name, type) \
+enum ndr_err_code ndr_push_ ## name(struct ndr_push *ndr, int ndr_flags, const type *v); \
+enum ndr_err_code ndr_pull_ ## name(struct ndr_pull *ndr, int ndr_flags, type **v); \
+void ndr_print_ ## name(struct ndr_print *ndr, const char *var_name, const type *v);
+
 #define NDR_BUFFER_PROTO(name, type) \
 enum ndr_err_code ndr_push_ ## name(struct ndr_push *ndr, int ndr_flags, const type *v); \
 enum ndr_err_code ndr_pull_ ## name(struct ndr_pull *ndr, int ndr_flags, type *v); \
@@ -580,6 +587,7 @@ NDR_SCALAR_PROTO(uid_t, uid_t)
 NDR_SCALAR_PROTO(gid_t, gid_t)
 NDR_SCALAR_PROTO(NTSTATUS, NTSTATUS)
 NDR_SCALAR_PROTO(WERROR, WERROR)
+NDR_SCALAR_PROTO(HRESULT, HRESULT)
 NDR_SCALAR_PROTO(NTTIME, NTTIME)
 NDR_SCALAR_PROTO(NTTIME_1sec, NTTIME)
 NDR_SCALAR_PROTO(NTTIME_hyper, NTTIME)
@@ -652,6 +660,12 @@ char *GUID_string(TALLOC_CTX *mem_ctx, const struct GUID *guid);
 char *GUID_string2(TALLOC_CTX *mem_ctx, const struct GUID *guid);
 char *GUID_hexstring(TALLOC_CTX *mem_ctx, const struct GUID *guid);
 struct GUID GUID_random(void);
+
+/* Format is "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x" */
+ /* 32 chars + 4 ' ' + \0 + 2 for adding {}  */
+struct GUID_txt_buf { char buf[39]; };
+_PUBLIC_ char* GUID_buf_string(const struct GUID *guid,
+			       struct GUID_txt_buf *dst);
 
 _PUBLIC_ enum ndr_err_code ndr_pull_enum_uint8(struct ndr_pull *ndr, int ndr_flags, uint8_t *v);
 _PUBLIC_ enum ndr_err_code ndr_pull_enum_uint16(struct ndr_pull *ndr, int ndr_flags, uint16_t *v);

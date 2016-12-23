@@ -10,7 +10,7 @@ use Exporter;
 
 use strict;
 use Parse::Pidl qw(warning fatal error);
-use Parse::Pidl::Typelist qw(hasType resolveType getType mapTypeName expandAlias);
+use Parse::Pidl::Typelist qw(hasType resolveType getType mapTypeName expandAlias bitmap_type_fn enum_type_fn);
 use Parse::Pidl::Util qw(has_property ParseExpr unmake_str);
 use Parse::Pidl::NDR qw(GetPrevLevel GetNextLevel ContainsDeferred ContainsPipe is_charset_array);
 use Parse::Pidl::CUtil qw(get_value_of get_pointer_to);
@@ -112,7 +112,7 @@ sub EnumAndBitmapConsts($$$)
 	foreach my $e (@{$d->{ELEMENTS}}) {
 		$e =~ /^([A-Za-z0-9_]+)/;
 		my $cname = $1;
-		
+
 		$self->register_constant($cname, $d, $cname);
 	}
 }
@@ -221,10 +221,10 @@ sub PythonStruct($$$$$$)
 			my $mem_ctx = "pytalloc_get_mem_ctx(py_obj)";
 			my $l = $e->{LEVELS}[0];
 			my $nl = GetNextLevel($e, $l);
-			if ($l->{TYPE} eq "POINTER" and 
+			if ($l->{TYPE} eq "POINTER" and
 				not ($nl->{TYPE} eq "ARRAY" and ($nl->{IS_FIXED} or is_charset_array($e, $nl))) and
 				not ($nl->{TYPE} eq "DATA" and Parse::Pidl::Typelist::scalar_is_reference($nl->{DATA_TYPE}))) {
-				$self->pidl("talloc_unlink(pytalloc_get_mem_ctx(py_obj), $varname);");
+				$self->pidl("talloc_unlink($mem_ctx, discard_const($varname));");
 			}
 			$self->ConvertObjectFromPython($env, $mem_ctx, $e, "value", $varname, "return -1;");
 			$self->pidl("return 0;");
@@ -237,9 +237,16 @@ sub PythonStruct($$$$$$)
 		$self->pidl("static PyGetSetDef ".$getsetters."[] = {");
 		$self->indent;
 		foreach my $e (@{$d->{ELEMENTS}}) {
-			$self->pidl("{ discard_const_p(char, \"$e->{NAME}\"), py_$name\_get_$e->{NAME}, py_$name\_set_$e->{NAME} },");
+			$self->pidl("{");
+			$self->indent;
+			$self->pidl(".name = discard_const_p(char, \"$e->{NAME}\"),");
+			$self->pidl(".get = py_$name\_get_$e->{NAME},");
+			$self->pidl(".set = py_$name\_set_$e->{NAME},");
+			$self->pidl(".doc = discard_const_p(char, \"PIDL-generated element $e->{NAME}\")");
+			$self->deindent;
+			$self->pidl("},");
 		}
-		$self->pidl("{ NULL }");
+		$self->pidl("{ .name = NULL }");
 		$self->deindent;
 		$self->pidl("};");
 		$self->pidl("");
@@ -255,24 +262,35 @@ sub PythonStruct($$$$$$)
 
 	my $py_methods = "NULL";
 
-	# If the struct is not public there ndr_pull/ndr_push functions will 
+	# If the struct is not public there ndr_pull/ndr_push functions will
 	# be static so not callable from here
 	if (has_property($d, "public")) {
 		$self->pidl("static PyObject *py_$name\_ndr_pack(PyObject *py_obj)");
 		$self->pidl("{");
 		$self->indent;
 		$self->pidl("$cname *object = ($cname *)pytalloc_get_ptr(py_obj);");
+		$self->pidl("PyObject *ret = NULL;");
 		$self->pidl("DATA_BLOB blob;");
 		$self->pidl("enum ndr_err_code err;");
-		$self->pidl("err = ndr_push_struct_blob(&blob, pytalloc_get_mem_ctx(py_obj), object, (ndr_push_flags_fn_t)ndr_push_$name);");
+		$self->pidl("TALLOC_CTX *tmp_ctx = talloc_new(pytalloc_get_mem_ctx(py_obj));");
+		$self->pidl("if (tmp_ctx == NULL) {");
+		$self->indent;
+		$self->pidl("PyErr_SetNdrError(NDR_ERR_ALLOC);");
+		$self->pidl("return NULL;");
+		$self->deindent;
+		$self->pidl("}");
+		$self->pidl("err = ndr_push_struct_blob(&blob, tmp_ctx, object, (ndr_push_flags_fn_t)ndr_push_$name);");
 		$self->pidl("if (err != NDR_ERR_SUCCESS) {");
 		$self->indent;
+		$self->pidl("TALLOC_FREE(tmp_ctx);");
 		$self->pidl("PyErr_SetNdrError(err);");
 		$self->pidl("return NULL;");
 		$self->deindent;
 		$self->pidl("}");
 		$self->pidl("");
-		$self->pidl("return PyString_FromStringAndSize((char *)blob.data, blob.length);");
+		$self->pidl("ret = PyString_FromStringAndSize((char *)blob.data, blob.length);");
+		$self->pidl("TALLOC_FREE(tmp_ctx);");
+		$self->pidl("return ret;");
 		$self->deindent;
 		$self->pidl("}");
 		$self->pidl("");
@@ -282,7 +300,7 @@ sub PythonStruct($$$$$$)
 		$self->indent;
 		$self->pidl("$cname *object = ($cname *)pytalloc_get_ptr(py_obj);");
 		$self->pidl("DATA_BLOB blob;");
-		$self->pidl("int blob_length = 0;");
+		$self->pidl("Py_ssize_t blob_length = 0;");
 		$self->pidl("enum ndr_err_code err;");
 		$self->pidl("const char * const kwnames[] = { \"data_blob\", \"allow_remaining\", NULL };");
 		$self->pidl("PyObject *allow_remaining_obj = NULL;");
@@ -369,15 +387,16 @@ sub PythonStruct($$$$$$)
 	}
 	$self->pidl(".tp_methods = $py_methods,");
 	$self->pidl(".tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,");
-	$self->pidl(".tp_basicsize = sizeof(pytalloc_Object),");
 	$self->pidl(".tp_new = py_$name\_new,");
 	$self->deindent;
 	$self->pidl("};");
 
 	$self->pidl("");
 
-	my $talloc_typename = $self->import_type_variable("talloc", "Object");
-	$self->register_module_prereadycode(["$name\_Type.tp_base = $talloc_typename;", ""]);
+	my $talloc_typename = $self->import_type_variable("talloc", "BaseObject");
+	$self->register_module_prereadycode(["$name\_Type.tp_base = $talloc_typename;",
+					     "$name\_Type.tp_basicsize = pytalloc_BaseObject_size();",
+					     ""]);
 
 	return "&$typeobject";
 }
@@ -405,8 +424,8 @@ sub find_metadata_args($)
 	foreach my $e (@{$fn->{ELEMENTS}}) {
 		foreach my $dir (@{$e->{DIRECTION}}) {
 			 my $main = get_metadata_var($e);
-			 if ($main) { 
-				 $metadata_args->{$dir}->{$main} = $e->{NAME}; 
+			 if ($main) {
+				 $metadata_args->{$dir}->{$main} = $e->{NAME};
 			 }
 		 }
 	}
@@ -432,7 +451,7 @@ sub PythonFunctionUnpackOut($$$)
 	$self->pidl("PyObject *result;");
 	foreach my $e (@{$fn->{ELEMENTS}}) {
 		next unless (grep(/out/,@{$e->{DIRECTION}}));
-		next if (($metadata_args->{in}->{$e->{NAME}} and grep(/in/, @{$e->{DIRECTION}})) or 
+		next if (($metadata_args->{in}->{$e->{NAME}} and grep(/in/, @{$e->{DIRECTION}})) or
 		         ($metadata_args->{out}->{$e->{NAME}}) and grep(/out/, @{$e->{DIRECTION}}));
 		$self->pidl("PyObject *py_$e->{NAME};");
 		$result_size++;
@@ -515,7 +534,7 @@ sub PythonFunctionPackIn($$$)
 
 	foreach my $e (@{$fn->{ELEMENTS}}) {
 		next unless (grep(/in/,@{$e->{DIRECTION}}));
-		next if (($metadata_args->{in}->{$e->{NAME}} and grep(/in/, @{$e->{DIRECTION}})) or 
+		next if (($metadata_args->{in}->{$e->{NAME}} and grep(/in/, @{$e->{DIRECTION}})) or
 				 ($metadata_args->{out}->{$e->{NAME}}) and grep(/out/, @{$e->{DIRECTION}}));
 		$self->pidl("PyObject *py_$e->{NAME};");
 		$args_format .= "O";
@@ -645,6 +664,7 @@ sub PythonType($$$$)
 
 	if ($actual_ctype->{TYPE} eq "UNION" and defined($actual_ctype->{ELEMENTS})) {
 		$self->pidl("PyObject *py_import_$d->{NAME}(TALLOC_CTX *mem_ctx, int level, " .mapTypeName($d) . " *in)");
+		$self->pidl_hdr("PyObject *py_import_$d->{NAME}(TALLOC_CTX *mem_ctx, int level, " .mapTypeName($d) . " *in);\n");
 		$self->pidl("{");
 		$self->indent;
 		$self->FromUnionToPythonFunction("mem_ctx", $actual_ctype, "level", "in") if ($actual_ctype->{TYPE} eq "UNION");
@@ -653,6 +673,7 @@ sub PythonType($$$$)
 		$self->pidl("");
 
 		$self->pidl(mapTypeName($d) . " *py_export_$d->{NAME}(TALLOC_CTX *mem_ctx, int level, PyObject *in)");
+		$self->pidl_hdr(mapTypeName($d) . " *py_export_$d->{NAME}(TALLOC_CTX *mem_ctx, int level, PyObject *in);\n");
 		$self->pidl("{");
 		$self->indent;
 		$self->FromPythonToUnionFunction($actual_ctype, mapTypeName($d), "level", "mem_ctx", "in") if ($actual_ctype->{TYPE} eq "UNION");
@@ -737,10 +758,10 @@ sub Interface($$$)
 		$self->pidl("return py_dcerpc_interface_init_helper(type, args, kwargs, &ndr_table_$interface->{NAME});");
 		$self->deindent;
 		$self->pidl("}");
-	
+
 		$self->pidl("");
 
-		my $signature = 
+		my $signature =
 "\"$interface->{NAME}(binding, lp_ctx=None, credentials=None) -> connection\\n\"
 \"\\n\"
 \"binding should be a DCE/RPC binding string (for example: ncacn_ip_tcp:127.0.0.1)\\n\"
@@ -801,7 +822,6 @@ sub Interface($$$)
 		$self->indent;
 		$self->pidl("PyObject_HEAD_INIT(NULL) 0,");
 		$self->pidl(".tp_name = \"$basename.$interface->{NAME}\",");
-		$self->pidl(".tp_basicsize = sizeof(pytalloc_Object),");
 		$self->pidl(".tp_doc = $docstring,");
 		$self->pidl(".tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,");
 		$self->pidl(".tp_new = syntax_$interface->{NAME}_new,");
@@ -812,7 +832,9 @@ sub Interface($$$)
 
 		$self->register_module_typeobject("abstract_syntax", "&$syntax_typename");
 		my $ndr_typename = $self->import_type_variable("samba.dcerpc.misc", "ndr_syntax_id");
-		$self->register_module_prereadycode(["$syntax_typename.tp_base = $ndr_typename;", ""]);
+		$self->register_module_prereadycode(["$syntax_typename.tp_base = $ndr_typename;",
+						     "$syntax_typename.tp_basicsize = pytalloc_BaseObject_size();",
+						     ""]);
 	}
 
 	$self->pidl_hdr("\n");
@@ -874,7 +896,7 @@ sub import_type_variable($$$)
 sub use_type_variable($$)
 {
 	my ($self, $orig_ctype) = @_;
-	# FIXME: Have a global lookup table for types that look different on the 
+	# FIXME: Have a global lookup table for types that look different on the
 	# wire than they are named in C?
 	if ($orig_ctype->{NAME} eq "dom_sid2" or
 	    $orig_ctype->{NAME} eq "dom_sid28" or
@@ -951,14 +973,58 @@ sub ConvertObjectFromPythonData($$$$$$;$)
 		$actual_ctype = $actual_ctype->{DATA};
 	}
 
-	if ($actual_ctype->{TYPE} eq "ENUM" or $actual_ctype->{TYPE} eq "BITMAP") {
+	# We need to cover ENUMs, BITMAPS and SCALAR values here, as
+	# all could otherwise be assigned invalid integer values
+	my $ctype_alias = "";
+	my $uint_max = "";
+	if ($actual_ctype->{TYPE} eq "ENUM") {
+	        # Importantly, ENUM values are unsigned in pidl, and
+	        # typically map to uint32
+	        $ctype_alias = enum_type_fn($actual_ctype);
+	} elsif ($actual_ctype->{TYPE} eq "BITMAP") {
+	        $ctype_alias = bitmap_type_fn($actual_ctype);
+	} elsif ($actual_ctype->{TYPE} eq "SCALAR") {
+	        $ctype_alias = expandAlias($actual_ctype->{NAME});
+	}
+
+	# This is the unsigned Python Integer -> C integer validation
+	# case.  The signed case is below.
+	if ($ctype_alias  =~ /^(uint[0-9]*|hyper|udlong|udlongr
+                                |NTTIME_hyper|NTTIME|NTTIME_1sec
+                                |uid_t|gid_t)$/x) {
+	        $self->pidl("{");
+		$self->indent;
+		$self->pidl("const unsigned long long uint_max = ndr_sizeof2uintmax(sizeof($target));");
 		$self->pidl("if (PyLong_Check($cvar)) {");
 		$self->indent;
-		$self->pidl("$target = PyLong_AsLongLong($cvar);");
+		$self->pidl("unsigned long long test_var;");
+		$self->pidl("test_var = PyLong_AsUnsignedLongLong($cvar);");
+		$self->pidl("if (PyErr_Occurred() != NULL) {");
+		$self->indent;
+		$self->pidl($fail);
+		$self->deindent;
+		$self->pidl("}");
+		$self->pidl("if (test_var > uint_max) {");
+		$self->indent;
+		$self->pidl("PyErr_Format(PyExc_OverflowError, \"Expected type %s or %s within range 0 - %llu, got %llu\",\\");
+		$self->pidl("  PyInt_Type.tp_name, PyLong_Type.tp_name, uint_max, test_var);");
+		$self->pidl($fail);
+		$self->deindent;
+		$self->pidl("}");
+		$self->pidl("$target = test_var;");
 		$self->deindent;
 		$self->pidl("} else if (PyInt_Check($cvar)) {");
 		$self->indent;
-		$self->pidl("$target = PyInt_AsLong($cvar);");
+		$self->pidl("long test_var;");
+		$self->pidl("test_var = PyInt_AsLong($cvar);");
+		$self->pidl("if (test_var < 0 || test_var > uint_max) {");
+		$self->indent;
+		$self->pidl("PyErr_Format(PyExc_OverflowError, \"Expected type %s or %s within range 0 - %llu, got %ld\",\\");
+		$self->pidl("  PyInt_Type.tp_name, PyLong_Type.tp_name, uint_max, test_var);");
+		$self->pidl($fail);
+		$self->deindent;
+		$self->pidl("}");
+		$self->pidl("$target = test_var;");
 		$self->deindent;
 		$self->pidl("} else {");
 		$self->indent;
@@ -967,32 +1033,61 @@ sub ConvertObjectFromPythonData($$$$$$;$)
 		$self->pidl($fail);
 		$self->deindent;
 		$self->pidl("}");
+		$self->deindent;
+		$self->pidl("}");
 		return;
 	}
-	if ($actual_ctype->{TYPE} eq "SCALAR" ) {
-		if (expandAlias($actual_ctype->{NAME}) =~ /^(u?int64|hyper|dlong|udlong|udlongr|NTTIME_hyper|NTTIME|NTTIME_1sec)$/) {
-			$self->pidl("if (PyLong_Check($cvar)) {");
-			$self->indent;
-			$self->pidl("$target = PyLong_AsLongLong($cvar);");
-			$self->deindent;
-			$self->pidl("} else if (PyInt_Check($cvar)) {");
-			$self->indent;
-			$self->pidl("$target = PyInt_AsLong($cvar);");
-			$self->deindent;
-			$self->pidl("} else {");
-			$self->indent;
-			$self->pidl("PyErr_Format(PyExc_TypeError, \"Expected type %s or %s\",\\");
-			$self->pidl("  PyInt_Type.tp_name, PyLong_Type.tp_name);");
-			$self->pidl($fail);
-			$self->deindent;
-			$self->pidl("}");
-			return;
-		}
-		if (expandAlias($actual_ctype->{NAME}) =~ /^(char|u?int[0-9]*|time_t|uid_t|gid_t)$/) {
-			$self->pidl("PY_CHECK_TYPE(&PyInt_Type, $cvar, $fail);");
-			$self->pidl("$target = PyInt_AsLong($cvar);");
-			return;
-		}
+
+	# Confirm the signed python integer fits in the C type
+	# correctly.  It is subtly different from the unsigned case
+	# above, so while it looks like a duplicate, it is not
+	# actually a duplicate.
+	if ($ctype_alias  =~ /^(dlong|char|int[0-9]*|time_t)$/x) {
+	        $self->pidl("{");
+		$self->indent;
+		$self->pidl("const long long int_max = ndr_sizeof2intmax(sizeof($target));");
+		$self->pidl("const long long int_min = -int_max - 1;");
+		$self->pidl("if (PyLong_Check($cvar)) {");
+		$self->indent;
+		$self->pidl("long long test_var;");
+		$self->pidl("test_var = PyLong_AsLongLong($cvar);");
+		$self->pidl("if (PyErr_Occurred() != NULL) {");
+		$self->indent;
+		$self->pidl($fail);
+		$self->deindent;
+		$self->pidl("}");
+		$self->pidl("if (test_var < int_min || test_var > int_max) {");
+		$self->indent;
+		$self->pidl("PyErr_Format(PyExc_OverflowError, \"Expected type %s or %s within range %lld - %lld, got %lld\",\\");
+		$self->pidl("  PyInt_Type.tp_name, PyLong_Type.tp_name, int_min, int_max, test_var);");
+		$self->pidl($fail);
+		$self->deindent;
+		$self->pidl("}");
+		$self->pidl("$target = test_var;");
+		$self->deindent;
+		$self->pidl("} else if (PyInt_Check($cvar)) {");
+		$self->indent;
+		$self->pidl("long test_var;");
+		$self->pidl("test_var = PyInt_AsLong($cvar);");
+		$self->pidl("if (test_var < int_min || test_var > int_max) {");
+		$self->indent;
+		$self->pidl("PyErr_Format(PyExc_OverflowError, \"Expected type %s or %s within range %lld - %lld, got %ld\",\\");
+		$self->pidl("  PyInt_Type.tp_name, PyLong_Type.tp_name, int_min, int_max, test_var);");
+		$self->pidl($fail);
+		$self->deindent;
+		$self->pidl("}");
+		$self->pidl("$target = test_var;");
+		$self->deindent;
+		$self->pidl("} else {");
+		$self->indent;
+		$self->pidl("PyErr_Format(PyExc_TypeError, \"Expected type %s or %s\",\\");
+		$self->pidl("  PyInt_Type.tp_name, PyLong_Type.tp_name);");
+		$self->pidl($fail);
+		$self->deindent;
+		$self->pidl("}");
+		$self->deindent;
+		$self->pidl("}");
+		return;
 	}
 
 	if ($actual_ctype->{TYPE} eq "STRUCT" or $actual_ctype->{TYPE} eq "INTERFACE") {
@@ -1018,7 +1113,7 @@ sub ConvertObjectFromPythonData($$$$$$;$)
 		return;
 	}
 
-	if ($actual_ctype->{TYPE} eq "SCALAR" and 
+	if ($actual_ctype->{TYPE} eq "SCALAR" and
 		($actual_ctype->{NAME} eq "string" or $actual_ctype->{NAME} eq "nbt_string" or $actual_ctype->{NAME} eq "nbt_name" or $actual_ctype->{NAME} eq "wrepl_nbt_name")) {
 		$self->pidl("$target = talloc_strdup($mem_ctx, PyString_AS_STRING($cvar));");
 		return;
@@ -1056,6 +1151,11 @@ sub ConvertObjectFromPythonData($$$$$$;$)
 
 	if ($actual_ctype->{TYPE} eq "SCALAR" and $actual_ctype->{NAME} eq "WERROR") {
 		$self->pidl("$target = W_ERROR(PyInt_AsLong($cvar));");
+		return;
+	}
+
+	if ($actual_ctype->{TYPE} eq "SCALAR" and $actual_ctype->{NAME} eq "HRESULT") {
+		$self->pidl("$target = HRES_ERROR(PyInt_AsLong($cvar));");
 		return;
 	}
 
@@ -1143,6 +1243,13 @@ sub ConvertObjectFromPythonLevel($$$$$$$$)
 				$self->pidl("$var_name = talloc_array_ptrtype($mem_ctx, $var_name, PyList_GET_SIZE($py_var));");
 				$self->pidl("if (!$var_name) { $fail; }");
 				$self->pidl("talloc_set_name_const($var_name, \"ARRAY: $var_name\");");
+			} else {
+				$self->pidl("if (ARRAY_SIZE($var_name) != PyList_GET_SIZE($py_var)) {");
+				$self->indent;
+				$self->pidl("PyErr_Format(PyExc_TypeError, \"Expected list of type %s, length %zu, got %zd\", Py_TYPE($py_var)->tp_name, ARRAY_SIZE($var_name),  PyList_GET_SIZE($py_var));");
+				$self->pidl("$fail");
+				$self->deindent;
+				$self->pidl("}");
 			}
 			$self->pidl("for ($counter = 0; $counter < PyList_GET_SIZE($py_var); $counter++) {");
 			$self->indent;
@@ -1192,12 +1299,28 @@ sub ConvertScalarToPython($$$)
 
 	$ctypename = expandAlias($ctypename);
 
-	if ($ctypename =~ /^(u?int64|hyper|dlong|udlong|udlongr|NTTIME_hyper|NTTIME|NTTIME_1sec)$/) {
-		return "PyLong_FromLongLong($cvar)";
+	if ($ctypename =~ /^(int64|dlong)$/) {
+		return "ndr_PyLong_FromLongLong($cvar)";
 	}
 
-	if ($ctypename =~ /^(char|u?int[0-9]*|time_t|uid_t|gid_t)$/) {
+	if ($ctypename =~ /^(uint64|hyper|NTTIME_hyper|NTTIME|NTTIME_1sec|udlong|udlongr|uid_t|gid_t)$/) {
+		return "ndr_PyLong_FromUnsignedLongLong($cvar)";
+	}
+
+	if ($ctypename =~ /^(char|int|int8|int16|int32|time_t)$/) {
 		return "PyInt_FromLong($cvar)";
+	}
+
+	# Needed to ensure unsigned values in a 32 or 16 bit enum is
+	# cast correctly to a uint32_t, not sign extended to a a
+	# possibly 64 bit unsigned long.  (enums are signed in C,
+	# unsigned in NDR)
+	if ($ctypename =~ /^(uint32|uint3264)$/) {
+		return "ndr_PyLong_FromUnsignedLongLong((uint32_t)$cvar)";
+	}
+
+	if ($ctypename =~ /^(uint|uint8|uint16|uint1632)$/) {
+		return "PyInt_FromLong((uint16_t)$cvar)";
 	}
 
 	if ($ctypename eq "DATA_BLOB") {
@@ -1210,6 +1333,10 @@ sub ConvertScalarToPython($$$)
 
 	if ($ctypename eq "WERROR") {
 		return "PyErr_FromWERROR($cvar)";
+	}
+
+	if ($ctypename eq "HRESULT") {
+		return "PyErr_FromHRESULT($cvar)";
 	}
 
 	if (($ctypename eq "string" or $ctypename eq "nbt_string" or $ctypename eq "nbt_name" or $ctypename eq "wrepl_nbt_name")) {
@@ -1244,8 +1371,8 @@ sub ConvertObjectToPythonData($$$$$;$)
 	my $actual_ctype = $ctype;
 	if ($actual_ctype->{TYPE} eq "TYPEDEF") {
 		$actual_ctype = $actual_ctype->{DATA};
-	} 
-	
+	}
+
 	if ($actual_ctype->{TYPE} eq "ENUM") {
 		return $self->ConvertScalarToPython(Parse::Pidl::Typelist::enum_type_fn($actual_ctype), $cvar);
 	} elsif ($actual_ctype->{TYPE} eq "BITMAP") {
@@ -1338,7 +1465,7 @@ sub ConvertObjectToPythonLevel($$$$$$)
 			$self->indent;
 			my $counter = "$e->{NAME}_cntr_$l->{LEVEL_INDEX}";
 			$self->pidl("int $counter;");
-			$self->pidl("for ($counter = 0; $counter < $length; $counter++) {");
+			$self->pidl("for ($counter = 0; $counter < ($length); $counter++) {");
 			$self->indent;
 			my $member_var = "py_$e->{NAME}_$l->{LEVEL_INDEX}";
 			$self->pidl("PyObject *$member_var;");
@@ -1383,6 +1510,7 @@ sub Parse($$$$$)
 
     $self->pidl_hdr("
 /* Python wrapper functions auto-generated by pidl */
+#define PY_SSIZE_T_CLEAN 1 /* We use Py_ssize_t for PyArg_ParseTupleAndKeywords */
 #include <Python.h>
 #include \"includes.h\"
 #include <pytalloc.h>
@@ -1391,13 +1519,68 @@ sub Parse($$$$$)
 #include \"$hdr\"
 #include \"$ndr_hdr\"
 
+/*
+ * These functions are here to ensure they can be optomised out by
+ * the compiler based on the constant input values
+ */
+
+static inline unsigned long long ndr_sizeof2uintmax(size_t var_size)
+{
+	switch (var_size) {
+	case 8:
+		return UINT64_MAX;
+	case 4:
+		return UINT32_MAX;
+	case 2:
+		return UINT16_MAX;
+	case 1:
+		return UINT8_MAX;
+	}
+
+	return 0;
+}
+
+static inline long long ndr_sizeof2intmax(size_t var_size)
+{
+	switch (var_size) {
+	case 8:
+		return INT64_MAX;
+	case 4:
+		return INT32_MAX;
+	case 2:
+		return INT16_MAX;
+	case 1:
+		return INT8_MAX;
+	}
+
+	return 0;
+}
+
+static inline PyObject *ndr_PyLong_FromLongLong(long long v)
+{
+	if (v > LONG_MAX || v < LONG_MIN) {
+		return PyLong_FromLongLong(v);
+	} else {
+		return PyInt_FromLong(v);
+	}
+}
+
+static inline PyObject *ndr_PyLong_FromUnsignedLongLong(unsigned long long v)
+{
+	if (v > LONG_MAX) {
+		return PyLong_FromUnsignedLongLong(v);
+	} else {
+		return PyInt_FromLong(v);
+	}
+}
+
 ");
 
 	foreach my $x (@$ndr) {
 		($x->{TYPE} eq "IMPORT") && $self->Import(@{$x->{PATHS}});
 	    ($x->{TYPE} eq "INTERFACE") && $self->Interface($x, $basename);
 	}
-	
+
 	$self->pidl("static PyMethodDef $basename\_methods[] = {");
 	$self->indent;
 	foreach (@{$self->{module_methods}}) {
@@ -1470,7 +1653,7 @@ sub Parse($$$$$)
 		my $py_obj;
 		my ($ctype, $cvar) = @{$h->{'val'}};
 		if ($cvar =~ /^[0-9]+$/ or $cvar =~ /^0x[0-9a-fA-F]+$/) {
-			$py_obj = "PyInt_FromLong($cvar)";
+			$py_obj = "ndr_PyLong_FromUnsignedLongLong($cvar)";
 		} elsif ($cvar =~ /^".*"$/) {
 			$py_obj = "PyString_FromString($cvar)";
 		} else {

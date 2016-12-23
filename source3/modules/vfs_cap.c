@@ -30,8 +30,7 @@ static char *capencode(TALLOC_CTX *ctx, const char *from);
 static char *capdecode(TALLOC_CTX *ctx, const char *from);
 
 static uint64_t cap_disk_free(vfs_handle_struct *handle, const char *path,
-	bool small_query, uint64_t *bsize,
-	uint64_t *dfree, uint64_t *dsize)
+			      uint64_t *bsize, uint64_t *dfree, uint64_t *dsize)
 {
 	char *cappath = capencode(talloc_tos(), path);
 
@@ -39,11 +38,23 @@ static uint64_t cap_disk_free(vfs_handle_struct *handle, const char *path,
 		errno = ENOMEM;
 		return (uint64_t)-1;
 	}
-	return SMB_VFS_NEXT_DISK_FREE(handle, cappath, small_query, bsize,
-					dfree, dsize);
+	return SMB_VFS_NEXT_DISK_FREE(handle, cappath, bsize, dfree, dsize);
 }
 
-static DIR *cap_opendir(vfs_handle_struct *handle, const char *fname, const char *mask, uint32 attr)
+static int cap_get_quota(vfs_handle_struct *handle, const char *path,
+			 enum SMB_QUOTA_TYPE qtype, unid_t id,
+			 SMB_DISK_QUOTA *dq)
+{
+	char *cappath = capencode(talloc_tos(), path);
+
+	if (!cappath) {
+		errno = ENOMEM;
+		return -1;
+	}
+	return SMB_VFS_NEXT_GET_QUOTA(handle, cappath, qtype, id, dq);
+}
+
+static DIR *cap_opendir(vfs_handle_struct *handle, const char *fname, const char *mask, uint32_t attr)
 {
 	char *capname = capencode(talloc_tos(), fname);
 
@@ -75,13 +86,12 @@ static struct dirent *cap_readdir(vfs_handle_struct *handle,
 	}
 	DEBUG(3,("cap: cap_readdir: %s\n", newname));
 	newnamelen = strlen(newname)+1;
-	newdirent = (struct dirent *)talloc_array(talloc_tos(),
-			char,
-			sizeof(struct dirent)+
-				newnamelen);
+	newdirent = talloc_size(
+		talloc_tos(), sizeof(struct dirent) + newnamelen);
 	if (!newdirent) {
 		return NULL;
 	}
+	talloc_set_name_const(newdirent, "struct dirent");
 	memcpy(newdirent, result, sizeof(struct dirent));
 	memcpy(&newdirent->d_name, newname, newnamelen);
 	return newdirent;
@@ -519,6 +529,7 @@ static int cap_fsetxattr(vfs_handle_struct *handle, struct files_struct *fsp, co
 
 static struct vfs_fn_pointers vfs_cap_fns = {
 	.disk_free_fn = cap_disk_free,
+	.get_quota_fn = cap_get_quota,
 	.opendir_fn = cap_opendir,
 	.readdir_fn = cap_readdir,
 	.mkdir_fn = cap_mkdir,

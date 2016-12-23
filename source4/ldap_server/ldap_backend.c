@@ -255,7 +255,7 @@ struct ldapsrv_reply *ldapsrv_init_reply(struct ldapsrv_call *call, uint8_t type
 
 void ldapsrv_queue_reply(struct ldapsrv_call *call, struct ldapsrv_reply *reply)
 {
-	DLIST_ADD_END(call->replies, reply, struct ldapsrv_reply *);
+	DLIST_ADD_END(call->replies, reply);
 }
 
 static NTSTATUS ldapsrv_unwilling(struct ldapsrv_call *call, int error)
@@ -459,7 +459,7 @@ static int ldapsrv_rename_with_controls(struct ldapsrv_call *call,
 	ret = ldb_build_rename_req(&req, ldb, ldb,
 					olddn,
 					newdn,
-					NULL,
+					controls,
 					res,
 					ldb_modify_default_callback,
 					NULL);

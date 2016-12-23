@@ -483,6 +483,7 @@ static struct tevent_req *smbd_smb2_setinfo_send(TALLOC_CTX *mem_ctx,
 			lck = get_existing_share_mode_lock(mem_ctx,
 							fsp->file_id);
 			if (lck == NULL) {
+				SAFE_FREE(data);
 				tevent_req_nterror(req,
 					NT_STATUS_UNSUCCESSFUL);
 				return tevent_req_post(req, ev);
@@ -519,6 +520,24 @@ static struct tevent_req *smbd_smb2_setinfo_send(TALLOC_CTX *mem_ctx,
 						 &ret_size);
 		TALLOC_FREE(lck);
 		SAFE_FREE(data);
+		if (!NT_STATUS_IS_OK(status)) {
+			if (NT_STATUS_EQUAL(status, NT_STATUS_INVALID_LEVEL)) {
+				status = NT_STATUS_INVALID_INFO_CLASS;
+			}
+			tevent_req_nterror(req, status);
+			return tevent_req_post(req, ev);
+		}
+		break;
+	}
+
+	case 0x02:/* SMB2_SETINFO_FS */
+	{
+		uint16_t file_info_level = in_file_info_class + 1000;
+
+		status = smbd_do_setfsinfo(conn, smbreq, state,
+					file_info_level,
+					fsp,
+					&in_input_buffer);
 		if (!NT_STATUS_IS_OK(status)) {
 			if (NT_STATUS_EQUAL(status, NT_STATUS_INVALID_LEVEL)) {
 				status = NT_STATUS_INVALID_INFO_CLASS;

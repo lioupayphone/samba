@@ -21,8 +21,6 @@
 
 #include "includes.h"
 #include "libsmb/libsmb.h"
-#include "../libcli/auth/spnego.h"
-#include "../auth/ntlmssp/ntlmssp.h"
 #include "../lib/util/tevent_ntstatus.h"
 #include "async_smb.h"
 #include "../libcli/smb/smb_seal.h"
@@ -149,8 +147,7 @@ NTSTATUS cli_unix_extensions_version(struct cli_state *cli, uint16_t *pmajor,
 		goto fail;
 	}
 
-	if (!tevent_req_poll(req, ev)) {
-		status = map_nt_error_from_unix(errno);
+	if (!tevent_req_poll_ntstatus(req, ev, &status)) {
 		goto fail;
 	}
 
@@ -235,8 +232,8 @@ NTSTATUS cli_set_unix_extensions_capabilities_recv(struct tevent_req *req)
 }
 
 NTSTATUS cli_set_unix_extensions_capabilities(struct cli_state *cli,
-					      uint16_t major, uint16 minor,
-					      uint32_t caplow, uint32 caphigh)
+					      uint16_t major, uint16_t minor,
+					      uint32_t caplow, uint32_t caphigh)
 {
 	struct tevent_context *ev;
 	struct tevent_req *req;

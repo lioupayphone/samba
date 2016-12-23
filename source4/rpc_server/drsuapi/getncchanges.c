@@ -376,6 +376,16 @@ static WERROR get_nc_changes_build_object(struct drsuapi_DsReplicaObjectListItem
 				return werr;
 			}
 		}
+		if (attids[i] != obj->object.attribute_ctr.attributes[i].attid) {
+			DEBUG(0, ("Unable to replicate attribute %s on %s via DRS, incorrect attributeID:  "
+				  "0x%08x vs 0x%08x "
+				  "Run dbcheck!\n",
+				  sa->lDAPDisplayName,
+				  ldb_dn_get_linearized(msg->dn),
+				  attids[i],
+				  obj->object.attribute_ctr.attributes[i].attid));
+			return WERR_DS_DATABASE_ERROR;
+		}
 	}
 
 	return WERR_OK;
@@ -936,7 +946,8 @@ static WERROR getncchanges_repl_secret(struct drsuapi_bind_state *b_state,
 				       bool has_get_all_changes)
 {
 	struct drsuapi_DsReplicaObjectIdentifier *ncRoot = req10->naming_context;
-	struct ldb_dn *obj_dn, *rodc_dn, *krbtgt_link_dn;
+	struct ldb_dn *obj_dn = NULL;
+	struct ldb_dn *rodc_dn, *krbtgt_link_dn;
 	int ret;
 	const char *rodc_attrs[] = { "msDS-KrbTgtLink", "msDS-NeverRevealGroup", "msDS-RevealOnDemandGroup", NULL };
 	const char *obj_attrs[] = { "tokenGroups", "objectSid", "UserAccountControl", "msDS-KrbTgtLinkBL", NULL };
