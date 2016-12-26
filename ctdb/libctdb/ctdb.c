@@ -33,7 +33,7 @@
 #include "libctdb_private.h"
 #include "io_elem.h"
 #include "messages.h"
-#include <samba-4.0/dlinklist.h>
+#include "lib/util/dlinklist.h"
 
 /* Remove type-safety macros. */
 #undef ctdb_connect

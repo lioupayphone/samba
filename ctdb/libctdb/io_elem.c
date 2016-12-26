@@ -28,7 +28,7 @@
 #include "io_elem.h"
 #include <tdb.h>
 #include <netinet/in.h>
-#include <samba-4.0/dlinklist.h>
+#include "lib/util/dlinklist.h"
 //#include <ctdb_protocol.h>
 
 struct io_elem {
@@ -154,7 +154,7 @@ void io_elem_reset(struct io_elem *io)
 
 void io_elem_queue(struct libctdb_connection *ctdb, struct io_elem *io)
 {
-	DLIST_ADD_END(ctdb->inqueue, io, struct io_elem);
+	DLIST_ADD_END(ctdb->inqueue, io);
 }
 
 void io_elem_dequeue(struct libctdb_connection *ctdb, struct io_elem *io)
