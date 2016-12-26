@@ -26,7 +26,7 @@
 #include <string.h>
 #include <errno.h>
 #include "libctdb_private.h"
-#include <samba-4.0/dlinklist.h>
+#include "lib/util/dlinklist.h"
 
 /* Remove type-safety macros. */
 #undef ctdb_set_message_handler_send
