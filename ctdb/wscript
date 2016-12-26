@@ -478,10 +478,10 @@ def build(bld):
                      manpages='ping_pong.1')
 
     bld.SAMBA_LIBRARY('libctdb',
-                      source='libctdb/control.c libctdb/ctdb.c libctdb/io_elem.c libctdb/local_tdb.c libctdb/logging.c libctdb/messages.c libctdb/sync.c libctdb/tst.c',
+                      source='libctdb/control.c libctdb/ctdb.c libctdb/io_elem.c libctdb/logging.c libctdb/messages.c libctdb/sync.c',
 	              pc_files='ctdb.pc',
                       deps='tdb',
-                      public_headers='include/ctdb_version.h include/ctdb.h include/ctdb_private.h include/ctdb_protocol.h include/ctdb_typesafe_cb.h',
+                      public_headers='include/ctdb_version.h  include/libctdb.h include/ctdb_protocol.h protocol/protocol.h',
                       vnum='1.0.1'
                       )
 
