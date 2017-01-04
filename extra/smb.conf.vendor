@@ -14,6 +14,8 @@
 	load printers = yes
 	cups options = raw
 
+	clustering = yes
+
 [homes]
 	comment = Home Directories
 	valid users = %S, %D%w%S

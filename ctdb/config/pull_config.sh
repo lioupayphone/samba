@@ -34,10 +34,6 @@ reload_nfs()
 
 reload_dns()
 {
-	service dnsmasq status >/dev/null 2>&1
-	if [ $? -ne 0 ] ; then
-		return 0
-	fi
 	service dnsmasq restart >/dev/null 2>&1
 	if [ $? -ne 0 ] ; then
 		echo "failed to reload dnsmasq service."

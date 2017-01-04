@@ -882,6 +882,7 @@ done
 %if %with_clustering_support
 install -m 0755 ctdb/config/ctdb.service %{buildroot}%{_unitdir}
 %endif
+touch %{buildroot}%{_sysconfdir}/ctdb/public_addresses
 
 # NetworkManager online/offline script
 install -d -m 0755 %{buildroot}%{_sysconfdir}/NetworkManager/dispatcher.d/
@@ -1952,6 +1953,7 @@ rm -rf %{buildroot}
 %{_sysconfdir}/ctdb/notify.d/README
 %{_sysconfdir}/ctdb/notify.d/syncconfig
 %{_tmpfilesdir}/ctdb.conf
+%{_sysconfdir}/ctdb/public_addresses
 %{_sbindir}/ctdbd
 %{_sbindir}/ctdbd_wrapper
 %{_bindir}/ctdb
