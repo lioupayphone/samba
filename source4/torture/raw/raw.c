@@ -69,17 +69,16 @@ NTSTATUS torture_raw_init(void)
 				      torture_samba3_rootdirfid);
 	torture_suite_add_1smb_test(suite, "samba3checkfsp", torture_samba3_checkfsp);
 	torture_suite_add_1smb_test(suite, "samba3oplocklogoff", torture_samba3_oplock_logoff);
-	torture_suite_add_1smb_test(suite, "samba3badnameblob", torture_samba3_check_openX_badname);
-	torture_suite_add_simple_test(suite, "samba3badpath", torture_samba3_badpath);
-	torture_suite_add_1smb_test(suite, "samba3caseinsensitive",
-				      torture_samba3_caseinsensitive);
-	torture_suite_add_1smb_test(suite, "samba3posixtimedlock",
+        torture_suite_add_1smb_test(suite, "samba3badnameblob", torture_samba3_check_openX_badname);
+        torture_suite_add_simple_test(suite, "samba3badpath", torture_samba3_badpath);
+        torture_suite_add_suite(suite, torture_raw_case_insensitive(suite));
+        torture_suite_add_1smb_test(suite, "samba3posixtimedlock",
 				      torture_samba3_posixtimedlock);
-	torture_suite_add_simple_test(suite, "scan-eamax", torture_max_eas);
+        torture_suite_add_simple_test(suite, "scan-eamax", torture_max_eas);
 
-	suite->description = talloc_strdup(suite, "Tests for the raw SMB interface");
+        suite->description = talloc_strdup(suite, "Tests for the raw SMB interface");
 
-	torture_register_suite(suite);
+        torture_register_suite(suite);
 
 	return NT_STATUS_OK;
 }
